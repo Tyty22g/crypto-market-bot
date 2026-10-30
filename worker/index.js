@@ -3,7 +3,8 @@ const DEFAULT_CONFIG = {
   title: "KRYPTON MARKETS",
   channelUrl: "https://t.me/Krypton_coins",
   showHighLow: true,
-  showVolume: true
+  showVolume: true,
+  priceEveryMinutes: 5
 };
 
 const JSON_HEADERS = {
@@ -12,14 +13,16 @@ const JSON_HEADERS = {
 };
 
 const BINANCE_ENDPOINTS = [
+  "https://data-api.binance.vision",
   "https://api.binance.com",
-  "https://api1.binance.com",
   "https://api-gcp.binance.com",
+  "https://api1.binance.com",
   "https://api2.binance.com",
   "https://api3.binance.com",
-  "https://api4.binance.com",
-  "https://data-api.binance.vision"
+  "https://api4.binance.com"
 ];
+
+const DEFAULT_PRICE_INTERVAL_MIN = 5;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -147,88 +150,31 @@ function channelButton(config) {
   };
 }
 
-// Binance Spot 24-hour ticker
-async function getBinanceTickers(symbols) {
-  const params = symbols.length === 1
-    ? `symbol=${encodeURIComponent(symbols[0])}`
-    : `symbols=${encodeURIComponent(JSON.stringify(symbols))}`;
+// ---------- Binance ----------
 
-  const errors = [];
-
-  for (const base of BINANCE_ENDPOINTS) {
-    try {
-      const url = `${base}/api/v3/ticker/24hr?${params}`;
-
-      const response = await fetch(url, {
-        method: "GET",
-        headers: {
-          "Accept": "application/json"
-        },
-        cf: {
-          cacheTtl: 0,
-          cacheEverything: false
-        }
-      });
-
-      const body = await response.text();
-
-      if (!response.ok) {
-        errors.push(`${base}: HTTP ${response.status}`);
-        continue;
-      }
-
-      let data;
-
-      try {
-        data = JSON.parse(body);
-      } catch {
-        errors.push(`${base}: INVALID_JSON`);
-        continue;
-      }
-
-      if (!Array.isArray(data)) {
-        data = [data];
-      }
-
-      console.log("BINANCE_CONNECTED:", base);
-
-      return {
-        data,
-        endpoint: base
-      };
-
-    } catch (error) {
-      errors.push(`${base}: ${error.message}`);
-    }
-  }
-
-  console.error("BINANCE_ERRORS:", JSON.stringify(errors));
-
-  throw new Error("BINANCE_ALL_ENDPOINTS_FAILED");
+class BadRequestError extends Error {
+  constructor(msg) { super(msg); this.code = "BAD_REQUEST"; }
 }
 
-// جلب شموع Binance
-async function getKlines(symbol, interval, limit) {
+async function binanceGet(path, params = {}) {
+  const qs = new URLSearchParams(params).toString();
   const errors = [];
 
   for (const base of BINANCE_ENDPOINTS) {
     try {
-      const url =
-        `${base}/api/v3/klines?symbol=${encodeURIComponent(symbol)}` +
-        `&interval=${interval}&limit=${limit}`;
-
-      const response = await fetch(url, {
+      const response = await fetch(`${base}${path}${qs ? "?" + qs : ""}`, {
         method: "GET",
-        headers: {
-          "Accept": "application/json"
-        },
-        cf: {
-          cacheTtl: 0,
-          cacheEverything: false
-        }
+        headers: { "Accept": "application/json" },
+        signal: AbortSignal.timeout(6000),
+        cf: { cacheTtl: 0, cacheEverything: false }
       });
 
       const body = await response.text();
+
+      // 400 = رمز غير صالح؛ كل السيرفرات ستعطي نفس النتيجة، لا فائدة من التجربة
+      if (response.status === 400) {
+        throw new BadRequestError(body.slice(0, 200));
+      }
 
       if (!response.ok) {
         errors.push(`${base}: HTTP ${response.status}`);
@@ -236,159 +182,106 @@ async function getKlines(symbol, interval, limit) {
       }
 
       const data = JSON.parse(body);
-
-      if (!Array.isArray(data) || !data.length) {
-        errors.push(`${base}: INVALID_KLINES`);
-        continue;
-      }
-
+      console.log("BINANCE_CONNECTED:", base);
       return data;
 
     } catch (error) {
+      if (error instanceof BadRequestError) throw error;
       errors.push(`${base}: ${error.message}`);
     }
   }
 
-  console.error(
-    "BINANCE_KLINES_FAILED:",
-    symbol,
-    JSON.stringify(errors)
-  );
-
-  return null;
+  console.error("BINANCE_ERRORS:", JSON.stringify(errors));
+  throw new Error("BINANCE_ALL_ENDPOINTS_FAILED");
 }
 
-// آخر ساعة مكتملة، دون احتساب الشمعة المفتوحة حالياً
-async function getHourlyData(symbols) {
-  const results = [];
+async function tickerCall(path, symbols, extra) {
+  const params = symbols.length === 1
+    ? { symbol: symbols[0], ...extra }
+    : { symbols: JSON.stringify(symbols), ...extra };
 
-  for (const symbol of symbols) {
-    const candles = await getKlines(symbol, "1h", 2);
+  const data = await binanceGet(path, params);
+  return Array.isArray(data) ? data : [data];
+}
 
-    if (!candles || candles.length < 2) {
-      results.push({
-        symbol,
-        available: false
-      });
-      continue;
+// طلب واحد لكل الأزواج. إذا كان فيه زوج غير صالح نتجاهله بدل ما يتعطل النشر كله.
+async function getTickers(symbols, path = "/api/v3/ticker/24hr", extra = {}) {
+  try {
+    return await tickerCall(path, symbols, extra);
+  } catch (error) {
+    if (error.code !== "BAD_REQUEST") throw error;
+
+    const all = await binanceGet("/api/v3/ticker/price");
+    const valid = new Set(all.map(x => x.symbol));
+    const usable = symbols.filter(s => valid.has(s));
+
+    console.warn(
+      "INVALID_SYMBOLS_SKIPPED:",
+      symbols.filter(s => !valid.has(s)).join(",")
+    );
+
+    if (!usable.length) throw new Error("NO_VALID_SYMBOLS");
+    return tickerCall(path, usable, extra);
+  }
+}
+
+async function getBinanceTickers(symbols) {
+  return { data: await getTickers(symbols) };
+}
+
+// تغيّر آخر ساعة / آخر 4 ساعات: طلب واحد فقط لكل الأزواج (بدل طلب لكل زوج)
+async function getWindowData(symbols, windowSize) {
+  const tickers = await getTickers(symbols, "/api/v3/ticker", { windowSize });
+  const bySymbol = new Map(tickers.map(t => [t.symbol, t]));
+
+  return symbols.map(symbol => {
+    const t = bySymbol.get(symbol);
+
+    if (!t || !Number.isFinite(Number(t.priceChangePercent))) {
+      return { symbol, available: false };
     }
 
-    const candle = candles[candles.length - 2];
-
-    const open = Number(candle[1]);
-    const close = Number(candle[4]);
-    const change = close - open;
-    const percent = open ? (change / open) * 100 : 0;
-
-    results.push({
+    return {
       symbol,
       available: true,
-      open,
-      close,
-      change,
-      percent,
-      high: Number(candle[2]),
-      low: Number(candle[3]),
-      volume: Number(candle[5]),
-      quoteVolume: Number(candle[7]),
-      trades: Number(candle[8])
-    });
-  }
-
-  return results;
+      open: Number(t.openPrice),
+      close: Number(t.lastPrice),
+      change: Number(t.priceChange),
+      percent: Number(t.priceChangePercent)
+    };
+  });
 }
 
-// آخر أربع ساعات مكتملة
-async function getFourHourData(symbols) {
-  const results = [];
-
-  for (const symbol of symbols) {
-    const candles = await getKlines(symbol, "1h", 5);
-
-    if (!candles || candles.length < 5) {
-      results.push({
-        symbol,
-        available: false
-      });
-      continue;
-    }
-
-    // استبعاد الشمعة الحالية غير المكتملة
-    const completedCandles = candles.slice(0, -1);
-
-    const first = completedCandles[0];
-    const last = completedCandles[completedCandles.length - 1];
-
-    const open = Number(first[1]);
-    const close = Number(last[4]);
-    const change = close - open;
-    const percent = open ? (change / open) * 100 : 0;
-
-    results.push({
-      symbol,
-      available: true,
-      open,
-      close,
-      change,
-      percent
-    });
-  }
-
-  return results;
-}
+const getHourlyData = symbols => getWindowData(symbols, "1h");
+const getFourHourData = symbols => getWindowData(symbols, "4h");
 
 function marketDirection(items) {
   const valid = items.filter(x => x.available);
 
   if (!valid.length) {
-    return {
-      label: "DATA UNAVAILABLE",
-      emoji: "⚪",
-      className: "NEUTRAL"
-    };
+    return { label: "DATA UNAVAILABLE", emoji: "⚪", className: "NEUTRAL" };
   }
 
   const average =
-    valid.reduce((sum, item) => sum + item.percent, 0) /
-    valid.length;
+    valid.reduce((sum, item) => sum + item.percent, 0) / valid.length;
 
   if (average >= 0.5) {
-    return {
-      label: "BULLISH MARKET",
-      emoji: "🟢",
-      className: "BULLISH",
-      average
-    };
+    return { label: "BULLISH MARKET", emoji: "🟢", className: "BULLISH", average };
   }
 
   if (average <= -0.5) {
-    return {
-      label: "BEARISH MARKET",
-      emoji: "🔴",
-      className: "BEARISH",
-      average
-    };
+    return { label: "BEARISH MARKET", emoji: "🔴", className: "BEARISH", average };
   }
 
-  return {
-    label: "SIDEWAYS MARKET",
-    emoji: "🟡",
-    className: "SIDEWAYS",
-    average
-  };
+  return { label: "SIDEWAYS MARKET", emoji: "🟡", className: "SIDEWAYS", average };
 }
 
 function topMovers(items, count = 5) {
   const valid = items.filter(x => x.available);
 
   return {
-    gainers: [...valid]
-      .sort((a, b) => b.percent - a.percent)
-      .slice(0, count),
-
-    losers: [...valid]
-      .sort((a, b) => a.percent - b.percent)
-      .slice(0, count)
+    gainers: [...valid].sort((a, b) => b.percent - a.percent).slice(0, count),
+    losers: [...valid].sort((a, b) => a.percent - b.percent).slice(0, count)
   };
 }
 
@@ -397,44 +290,28 @@ function coinName(symbol) {
 }
 
 function priceRows(config, tickers) {
-  const bySymbol = new Map(
-    tickers.map(t => [t.symbol, t])
-  );
-
+  const bySymbol = new Map(tickers.map(t => [t.symbol, t]));
   const rows = [];
 
   for (const symbol of config.symbols) {
     const t = bySymbol.get(symbol);
-
     if (!t) continue;
 
     const pct = Number(t.priceChangePercent);
     const change = Number(t.priceChange);
 
-    const emoji =
-      pct > 0 ? "🟢 ▲" :
-      pct < 0 ? "🔴 ▼" :
-      "⚪ ●";
+    const emoji = pct > 0 ? "🟢 ▲" : pct < 0 ? "🔴 ▼" : "⚪ ●";
 
-    let row =
-      `${emoji} <b>${escapeHtml(coinName(symbol))}/USDT</b>\n`;
-
+    let row = `${emoji} <b>${escapeHtml(coinName(symbol))}/USDT</b>\n`;
     row += `Price: <b>$${fmt(t.lastPrice)}</b>\n`;
-
-    row +=
-      `24H Change: ${signed(change, " USDT")} ` +
-      `(${signed(pct, "%")})`;
+    row += `24H Change: ${signed(change, " USDT")} (${signed(pct, "%")})`;
 
     if (config.showHighLow) {
-      row +=
-        `\n24H High: $${fmt(t.highPrice)}` +
-        ` | Low: $${fmt(t.lowPrice)}`;
+      row += `\n24H High: $${fmt(t.highPrice)} | Low: $${fmt(t.lowPrice)}`;
     }
 
     if (config.showVolume) {
-      row +=
-        `\n24H Volume: $${fmt(t.quoteVolume, 7)}` +
-        `\nTrades: ${fmt(t.count, 0)}`;
+      row += `\n24H Volume: $${fmt(t.quoteVolume, 7)}\nTrades: ${fmt(t.count, 0)}`;
     }
 
     rows.push(row);
@@ -443,33 +320,55 @@ function priceRows(config, tickers) {
   return rows;
 }
 
-function buildPriceMessage(config, tickers) {
+const ROW_SEP = "\n\n━━━━━━━━━━━━━━━━━━\n\n";
+
+// إذا زادت الأزواج عن حد تيليغرام (4096 حرف) ينقسم المنشور لعدة رسائل بدل ما يفشل
+function buildPriceMessages(config, tickers) {
   const rows = priceRows(config, tickers);
 
-  const message =
-    `📊 <b>${escapeHtml(config.title)}</b>\n` +
-    `<b>LIVE CRYPTO MARKET UPDATE</b>\n` +
-    `━━━━━━━━━━━━━━━━━━\n\n` +
-    rows.join("\n\n━━━━━━━━━━━━━━━━━━\n\n") +
-    `\n\n━━━━━━━━━━━━━━━━━━\n` +
-    `🕒 ${utcTime()}\n` +
-    `📡 Source: Binance Spot`;
+  if (!rows.length) throw new Error("NO_PRICE_DATA");
 
-  if (message.length > 3900) {
-    throw new Error("TELEGRAM_MESSAGE_TOO_LONG");
+  const footer =
+    `\n\n━━━━━━━━━━━━━━━━━━\n🕒 ${utcTime()}\n📡 Source: Binance Spot`;
+
+  const header = (part, total) =>
+    `📊 <b>${escapeHtml(config.title)}</b>\n` +
+    `<b>LIVE CRYPTO MARKET UPDATE${total > 1 ? ` (${part}/${total})` : ""}</b>\n` +
+    `━━━━━━━━━━━━━━━━━━\n\n`;
+
+  const LIMIT = 3800;
+  const chunks = [];
+  let current = [];
+
+  for (const row of rows) {
+    const trial = [...current, row].join(ROW_SEP);
+
+    if (current.length && header(9, 9).length + trial.length + footer.length > LIMIT) {
+      chunks.push(current);
+      current = [row];
+    } else {
+      current.push(row);
+    }
   }
 
-  return message;
+  chunks.push(current);
+
+  return chunks.map((chunk, i) =>
+    header(i + 1, chunks.length) + chunk.join(ROW_SEP) + footer
+  );
 }
 
-function buildHourlyMessage(config, tickers, hourly) {
+function moversBlock(list, emptyText) {
+  return list.length
+    ? list.map(x =>
+        `${x.percent < 0 ? "🔴" : "🟢"} ${escapeHtml(coinName(x.symbol))}: ${signed(x.percent, "%")}`
+      ).join("\n")
+    : emptyText;
+}
+
+function buildHourlyMessage(config, hourly) {
   const direction = marketDirection(hourly);
   const movers = topMovers(hourly);
-
-  const tickerMap = new Map(
-    tickers.map(t => [t.symbol, t])
-  );
-
   const valid = hourly.filter(x => x.available);
 
   let message =
@@ -479,45 +378,24 @@ function buildHourlyMessage(config, tickers, hourly) {
     `${direction.emoji} <b>${direction.label}</b>\n`;
 
   if (direction.average !== undefined) {
-    message +=
-      `Average selected-coin movement: ` +
-      `${signed(direction.average, "%")}\n`;
+    message += `Average selected-coin movement: ${signed(direction.average, "%")}\n`;
   }
 
   message +=
     `Coins analyzed: ${valid.length}/${config.symbols.length}\n\n` +
     `━━━━━━━━━━━━━━━━━━\n` +
-    `🏆 <b>TOP GAINERS · 1H</b>\n`;
-
-  if (movers.gainers.length) {
-    message += movers.gainers.map(x =>
-      `🟢 ${escapeHtml(coinName(x.symbol))}: ${signed(x.percent, "%")}`
-    ).join("\n");
-  } else {
-    message += "No hourly data available.";
-  }
-
-  message += `\n\n📉 <b>TOP LOSERS · 1H</b>\n`;
-
-  if (movers.losers.length) {
-    message += movers.losers.map(x =>
-      `🔴 ${escapeHtml(coinName(x.symbol))}: ${signed(x.percent, "%")}`
-    ).join("\n");
-  } else {
-    message += "No hourly data available.";
-  }
-
-  message += `\n\n━━━━━━━━━━━━━━━━━━\n`;
-  message += `<b>BITCOIN STATUS</b>\n`;
+    `🏆 <b>TOP GAINERS · 1H</b>\n` +
+    moversBlock(movers.gainers, "No hourly data available.") +
+    `\n\n📉 <b>TOP LOSERS · 1H</b>\n` +
+    moversBlock(movers.losers, "No hourly data available.") +
+    `\n\n━━━━━━━━━━━━━━━━━━\n<b>BITCOIN STATUS</b>\n`;
 
   const btc = hourly.find(x => x.symbol === "BTCUSDT");
-  const btcTicker = tickerMap.get("BTCUSDT");
 
   if (btc && btc.available) {
     message +=
-      `Price: $${fmt(btcTicker?.lastPrice || btc.close)}\n` +
-      `1H Change: ${signed(btc.change)} ` +
-      `(${signed(btc.percent, "%")})\n`;
+      `Price: $${fmt(btc.close)}\n` +
+      `1H Change: ${signed(btc.change)} (${signed(btc.percent, "%")})\n`;
   } else {
     message += "Hourly Bitcoin data unavailable.\n";
   }
@@ -527,10 +405,6 @@ function buildHourlyMessage(config, tickers, hourly) {
     `🕒 ${utcTime()}\n` +
     `📡 Source: Binance Spot\n` +
     `⚠️ Market data is informational, not financial advice.`;
-
-  if (message.length > 3900) {
-    throw new Error("TELEGRAM_MESSAGE_TOO_LONG");
-  }
 
   return message;
 }
@@ -546,74 +420,72 @@ function buildFourHourMessage(config, fourHour) {
     `${direction.emoji} <b>${direction.label}</b>\n`;
 
   if (direction.average !== undefined) {
-    message +=
-      `Average selected-coin movement: ` +
-      `${signed(direction.average, "%")}\n`;
+    message += `Average selected-coin movement: ${signed(direction.average, "%")}\n`;
   }
 
   message +=
-    `Coins analyzed: ${fourHour.filter(x => x.available).length}` +
-    `/${config.symbols.length}\n\n` +
+    `Coins analyzed: ${fourHour.filter(x => x.available).length}/${config.symbols.length}\n\n` +
     `━━━━━━━━━━━━━━━━━━\n` +
-    `🚀 <b>TOP PERFORMERS · 4H</b>\n`;
-
-  if (movers.gainers.length) {
-    message += movers.gainers.map(x =>
-      `🟢 ${escapeHtml(coinName(x.symbol))}: ${signed(x.percent, "%")}`
-    ).join("\n");
-  } else {
-    message += "No data available.";
-  }
-
-  message += `\n\n📉 <b>WEAKEST PERFORMERS · 4H</b>\n`;
-
-  if (movers.losers.length) {
-    message += movers.losers.map(x =>
-      `🔴 ${escapeHtml(coinName(x.symbol))}: ${signed(x.percent, "%")}`
-    ).join("\n");
-  } else {
-    message += "No data available.";
-  }
-
-  message +=
+    `🚀 <b>TOP PERFORMERS · 4H</b>\n` +
+    moversBlock(movers.gainers, "No data available.") +
+    `\n\n📉 <b>WEAKEST PERFORMERS · 4H</b>\n` +
+    moversBlock(movers.losers, "No data available.") +
     `\n\n━━━━━━━━━━━━━━━━━━\n` +
     `🕒 ${utcTime()}\n` +
     `📡 Source: Binance Spot\n` +
     `⚠️ Informational report, not financial advice.`;
 
-  if (message.length > 3900) {
-    throw new Error("TELEGRAM_MESSAGE_TOO_LONG");
-  }
-
   return message;
 }
+
+// ---------- Telegram ----------
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function telegramCall(env, method, payload) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
     throw new Error("TELEGRAM_SECRETS_MISSING");
   }
 
-  const response = await fetch(
-    `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json"
-      },
-      body: JSON.stringify(payload)
+  let lastError;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(
+        `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(10000)
+        }
+      );
+
+      const result = await response.json();
+
+      if (response.ok && result.ok) return result.result;
+
+      lastError = new Error(
+        `TELEGRAM_HTTP_${response.status}: ${result.description || "Telegram error"}`
+      );
+
+      // أخطاء دائمة (توكن/صلاحيات/نص): لا فائدة من إعادة المحاولة
+      if (response.status !== 429 && response.status < 500) throw lastError;
+
+      const wait = (result.parameters?.retry_after || attempt) * 1000;
+      await sleep(Math.min(wait, 8000));
+
+    } catch (error) {
+      if (String(error.message).startsWith("TELEGRAM_HTTP_4") &&
+          !String(error.message).startsWith("TELEGRAM_HTTP_429")) {
+        throw error;
+      }
+      lastError = error;
+      await sleep(attempt * 1000);
     }
-  );
-
-  const result = await response.json();
-
-  if (!response.ok || !result.ok) {
-    throw new Error(
-      `TELEGRAM_HTTP_${response.status}: ` +
-      `${result.description || "Telegram error"}`
-    );
   }
 
-  return result.result;
+  throw lastError;
 }
 
 async function sendPost(env, config, text) {
@@ -626,75 +498,138 @@ async function sendPost(env, config, text) {
   });
 
   console.log("TELEGRAM_NEW_POST:", result.message_id);
-
   return result;
 }
 
-async function saveState(env, key, result) {
-  // نحفظ حالة النشر فقط، وليس أسعار العملات.
-  await env.CONFIG.put(
-    key,
-    JSON.stringify({
-      message_id: result.message_id,
-      chat_id: env.TELEGRAM_CHAT_ID,
-      published_at: new Date().toISOString()
-    })
-  );
+// ---------- Publish jobs ----------
+
+async function publishPrices(env, config) {
+  const market = await getBinanceTickers(config.symbols);
+  const messages = buildPriceMessages(config, market.data);
+
+  let result;
+  for (const text of messages) {
+    result = await sendPost(env, config, text);
+  }
+
+  return { ok: true, type: "PRICE_UPDATE", message_id: result.message_id, parts: messages.length };
 }
 
-async function publishPrices(env) {
-  const config = await getConfig(env);
-  const market = await getBinanceTickers(config.symbols);
-
-  const message = buildPriceMessage(config, market.data);
-  const result = await sendPost(env, config, message);
-
-  await saveState(env, "bot_state_price", result);
-
-  return {
-    ok: true,
-    type: "PRICE_UPDATE",
-    message_id: result.message_id,
-    endpoint: market.endpoint
-  };
-}
-
-async function publishHourly(env) {
-  const config = await getConfig(env);
-
-  const market = await getBinanceTickers(config.symbols);
+async function publishHourly(env, config) {
   const hourly = await getHourlyData(config.symbols);
 
-  const message = buildHourlyMessage(
-    config,
-    market.data,
-    hourly
-  );
+  if (!hourly.some(x => x.available)) throw new Error("NO_HOURLY_DATA");
 
-  const result = await sendPost(env, config, message);
-
-  await saveState(env, "bot_state_hourly", result);
-
-  return {
-    ok: true,
-    type: "HOURLY_ANALYSIS",
-    message_id: result.message_id
-  };
+  const result = await sendPost(env, config, buildHourlyMessage(config, hourly));
+  return { ok: true, type: "HOURLY_ANALYSIS", message_id: result.message_id };
 }
 
-async function publishFourHour(env) {
-  const config = await getConfig(env);
+async function publishFourHour(env, config) {
   const fourHour = await getFourHourData(config.symbols);
 
-  const message = buildFourHourMessage(config, fourHour);
-  const result = await sendPost(env, config, message);
+  if (!fourHour.some(x => x.available)) throw new Error("NO_4H_DATA");
 
-  await saveState(env, "bot_state_4h", result);
+  const result = await sendPost(env, config, buildFourHourMessage(config, fourHour));
+  return { ok: true, type: "FOUR_HOUR_REPORT", message_id: result.message_id };
+}
 
+// ---------- Scheduler (cron واحد كل دقيقة، والكود يقرر شنو ينشر) ----------
+
+// لا نكتب أي شي في KV. الجدولة تُحسب من وقت الكرون نفسه.
+// الذاكرة هنا اختيارية: تستعمل فقط لتعويض دقيقة فائتة إذا بقي نفس الـ isolate شغال.
+const memory = { slots: {}, last: {}, last_error: null };
+
+function priceInterval(config) {
+  const n = Math.floor(Number(config.priceEveryMinutes));
+  return Number.isFinite(n) && n >= 1 && n <= 1440 ? n : DEFAULT_PRICE_INTERVAL_MIN;
+}
+
+function jobList(env, config) {
+  const minute = 60000;
+
+  return [
+    { key: "price", ms: priceInterval(config) * minute, grace: 10 * minute,
+      run: () => publishPrices(env, config) },
+    { key: "hourly", ms: 60 * minute, grace: 15 * minute,
+      run: () => publishHourly(env, config) },
+    { key: "four_hour", ms: 240 * minute, grace: 30 * minute,
+      run: () => publishFourHour(env, config) }
+  ];
+}
+
+async function runWithRetry(env, job) {
+  const delay = Number(env.RETRY_DELAY_MS ?? 2000);
+  let lastError;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await job.run();
+    } catch (error) {
+      lastError = error;
+      console.error(`JOB_${job.key}_ATTEMPT_${attempt}_FAILED:`, error.message);
+      if (attempt < 3) await sleep(delay * attempt);
+    }
+  }
+
+  throw lastError;
+}
+
+async function runDue(env, now = Date.now()) {
+  const config = await getConfig(env); // قراءة فقط
+  const due = [];
+
+  for (const job of jobList(env, config)) {
+    const slotStart = Math.floor(now / job.ms) * job.ms;
+    const seen = memory.slots[job.key] || 0;
+    const late = now - slotStart;
+
+    // isolate جديد: ننشر فقط إذا هذي دقيقة الموعد نفسها. isolate قديم: نعوّض الفائت.
+    const isDue = seen
+      ? slotStart > seen && late <= job.grace
+      : late < 60000;
+
+    if (!isDue) continue;
+
+    memory.slots[job.key] = slotStart;
+    due.push({ job, prev: seen });
+  }
+
+  if (!due.length) return [];
+
+  const results = await Promise.allSettled(
+    due.map(({ job }) => runWithRetry(env, job))
+  );
+
+  return results.map((r, i) => {
+    const { job, prev } = due[i];
+
+    if (r.status === "fulfilled") {
+      memory.last[job.key] = {
+        message_id: r.value.message_id,
+        published_at: new Date().toISOString()
+      };
+      return { job: job.key, ok: true, ...r.value };
+    }
+
+    // فشل نهائي: نرجّع الموعد ليعيد المحاولة تعويضاً (إن بقي نفس الـ isolate)
+    memory.slots[job.key] = prev;
+    memory.last_error = {
+      job: job.key,
+      message: String(r.reason?.message || r.reason),
+      at: new Date().toISOString()
+    };
+    return { job: job.key, ok: false, error: memory.last_error.message };
+  });
+}
+
+// ---------- HTTP ----------
+
+async function statusPayload() {
   return {
-    ok: true,
-    type: "FOUR_HOUR_REPORT",
-    message_id: result.message_id
+    price: memory.last.price || null,
+    hourly: memory.last.hourly || null,
+    four_hour: memory.last.four_hour || null,
+    last_error: memory.last_error || null
   };
 }
 
@@ -706,98 +641,70 @@ async function handleRequest(request, env) {
   }
 
   if (!url.pathname.startsWith("/api/")) {
-    return json({
-      ok: true,
-      service: "KRYPTON MARKETS",
-      message: "Worker is running"
-    });
+    return json({ ok: true, service: "KRYPTON MARKETS", message: "Worker is running" });
   }
 
   if (!isAuthorized(request, env)) {
-    return json({
-      ok: false,
-      error_type: "UNAUTHORIZED",
-      error: "Check ADMIN_KEY"
-    }, 401);
+    return json({ ok: false, error_type: "UNAUTHORIZED", error: "Check ADMIN_KEY" }, 401);
   }
 
   if (url.pathname === "/api/config" && request.method === "GET") {
-    const config = await getConfig(env);
-
-    const state = {
-      price: await env.CONFIG.get("bot_state_price", "json"),
-      hourly: await env.CONFIG.get("bot_state_hourly", "json"),
-      four_hour: await env.CONFIG.get("bot_state_4h", "json")
-    };
-
-    return json({
-      ok: true,
-      config,
-      state
-    });
+    return json({ ok: true, config: await getConfig(env), state: await statusPayload() });
   }
 
   if (url.pathname === "/api/config" && request.method === "POST") {
     const body = await request.json();
+    const old = await getConfig(env);
+
+    const interval = body.priceEveryMinutes === undefined
+      ? priceInterval(old)
+      : Math.floor(Number(body.priceEveryMinutes));
+
+    if (!Number.isFinite(interval) || interval < 1 || interval > 1440) {
+      throw new Error("INVALID_INTERVAL");
+    }
 
     const config = {
       symbols: cleanSymbols(body.symbols),
-      title: String(
-        body.title || DEFAULT_CONFIG.title
-      ).slice(0, 50),
-
-      channelUrl: String(
-        body.channelUrl || DEFAULT_CONFIG.channelUrl
-      ),
-
+      title: String(body.title || DEFAULT_CONFIG.title).slice(0, 50),
+      channelUrl: String(body.channelUrl || old.channelUrl || DEFAULT_CONFIG.channelUrl),
       showHighLow: body.showHighLow !== false,
-      showVolume: body.showVolume !== false
+      showVolume: body.showVolume !== false,
+      priceEveryMinutes: interval
     };
 
-    await env.CONFIG.put(
-      "bot_config",
-      JSON.stringify(config)
-    );
-
-    return json({
-      ok: true,
-      config
-    });
+    await env.CONFIG.put("bot_config", JSON.stringify(config));
+    return json({ ok: true, config });
   }
 
   if (url.pathname === "/api/publish" && request.method === "POST") {
-    return json(await publishPrices(env));
+    const r = await publishPrices(env, await getConfig(env));
+    memory.last.price = { message_id: r.message_id, published_at: new Date().toISOString() };
+    return json({ ...r, count: (await getConfig(env)).symbols.length, updated_at: utcTime() });
   }
 
-  if (
-    url.pathname === "/api/publish-hourly" &&
-    request.method === "POST"
-  ) {
-    return json(await publishHourly(env));
+  if (url.pathname === "/api/publish-hourly" && request.method === "POST") {
+    const r = await publishHourly(env, await getConfig(env));
+    memory.last.hourly = { message_id: r.message_id, published_at: new Date().toISOString() };
+    return json(r);
   }
 
-  if (
-    url.pathname === "/api/publish-4h" &&
-    request.method === "POST"
-  ) {
-    return json(await publishFourHour(env));
+  if (url.pathname === "/api/publish-4h" && request.method === "POST") {
+    const r = await publishFourHour(env, await getConfig(env));
+    memory.last.four_hour = { message_id: r.message_id, published_at: new Date().toISOString() };
+    return json(r);
+  }
+
+  // يشغّل نفس منطق الكرون يدوياً (للاختبار)
+  if (url.pathname === "/api/tick" && request.method === "POST") {
+    return json({ ok: true, ran: await runDue(env) });
   }
 
   if (url.pathname === "/api/status" && request.method === "GET") {
-    return json({
-      ok: true,
-      state: {
-        price: await env.CONFIG.get("bot_state_price", "json"),
-        hourly: await env.CONFIG.get("bot_state_hourly", "json"),
-        four_hour: await env.CONFIG.get("bot_state_4h", "json")
-      }
-    });
+    return json({ ok: true, state: await statusPayload() });
   }
 
-  return json({
-    ok: false,
-    error_type: "NOT_FOUND"
-  }, 404);
+  return json({ ok: false, error_type: "NOT_FOUND" }, 404);
 }
 
 export default {
@@ -818,42 +725,14 @@ export default {
     }
   },
 
-  
+  // كرون واحد فقط "* * * * *" — الكود يقرر الأسعار/الساعة/4 ساعات بنفسه
   async scheduled(controller, env, ctx) {
-    const cron = controller.cron;
+    console.log("KRYPTON_MARKETS_TICK:", controller.cron, controller.scheduledTime);
 
-    console.log("KRYPTON_MARKETS_CRON:", cron);
-
-    // الأسعار كل 5 دقائق
-    if (cron === "* * * * *") {
-      ctx.waitUntil(
-        publishPrices(env).catch(error => {
-          console.error("PRICE_PUBLISH_FAILED:", error.message);
-        })
-      );
-      return;
-    }
-
-    // تحليل السوق كل ساعة
-    if (cron === "0 * * * *") {
-      ctx.waitUntil(
-        publishHourly(env).catch(error => {
-          console.error("HOURLY_PUBLISH_FAILED:", error.message);
-        })
-      );
-      return;
-    }
-
-    // تقرير السوق كل 4 ساعات
-    if (cron === "0 */4 * * *") {
-      ctx.waitUntil(
-        publishFourHour(env).catch(error => {
-          console.error("FOUR_HOUR_PUBLISH_FAILED:", error.message);
-        })
-      );
-      return;
-    }
-
-    console.log("UNKNOWN_CRON_SCHEDULE:", cron);
+    ctx.waitUntil(
+      runDue(env, controller.scheduledTime || Date.now()).catch(error => {
+        console.error("TICK_FAILED:", error.message);
+      })
+    );
   }
 };
