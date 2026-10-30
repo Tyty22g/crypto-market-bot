@@ -855,7 +855,7 @@ async scheduled(controller, env, ctx) {
   }
 
   console.log("UNKNOWN_CRON_SCHEDULE:", cron);
-})
+}
       );
     }
   }
