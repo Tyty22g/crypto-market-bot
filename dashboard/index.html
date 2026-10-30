@@ -39,6 +39,16 @@ BNBUSDT
 SOLUSDT
 XRPUSDT</textarea>
       <p class="hint">اكتب كل زوج بسطر، مثال BTCUSDT. يجب أن يكون الزوج متاحاً في Binance Spot ومقابلاً لـ USDT.</p>
+      <label>كل كم دقيقة ينشر الأسعار</label>
+      <select id="priceEveryMinutes">
+        <option value="1">كل دقيقة</option>
+        <option value="2">كل 2 دقيقة</option>
+        <option value="5" selected>كل 5 دقائق</option>
+        <option value="10">كل 10 دقائق</option>
+        <option value="15">كل 15 دقيقة</option>
+        <option value="30">كل 30 دقيقة</option>
+        <option value="60">كل ساعة</option>
+      </select>
       <div class="checks">
         <label class="check"><input id="showHighLow" type="checkbox" checked> إظهار أعلى وأدنى سعر خلال 24 ساعة</label>
         <label class="check"><input id="showVolume" type="checkbox" checked> إظهار حجم التداول خلال 24 ساعة</label>
@@ -55,7 +65,7 @@ XRPUSDT</textarea>
     </section>
 
     <div id="notice" role="status"></div>
-    <footer>الأسعار من Binance Public Spot Market Data · التحديث المجدول كل دقيقة</footer>
+    <footer>الأسعار من Binance Public Spot Market Data · الجدولة من الكود (كرون واحد كل دقيقة)</footer>
   </main>
   <script src="app.js"></script>
 </body>
