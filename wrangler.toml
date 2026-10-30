@@ -3,8 +3,7 @@ main = "worker/index.js"
 compatibility_date = "2026-10-30"
 
 [triggers]
-crons = ["*/10* * * *"]
-
+crons = ["*/10 * * * *"]
 [[kv_namespaces]]
 binding = "CONFIG"
 id = "05ddbf5016944b54a8b2b0fe862c1d0b"
