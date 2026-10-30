@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101827">
+  <title>Crypto Market Bot | لوحة التحكم</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="wrap">
+    <header class="top">
+      <div class="mark">₿</div>
+      <div>
+        <h1>CRYPTO MARKET</h1>
+        <p>لوحة إدارة بوت أسعار العملات الرقمية</p>
+      </div>
+        <span class="live">BINANCE SPOT</span>
+    </header>
+
+    <section class="panel">
+      <h2>الاتصال بالبوت</h2>
+      <label>رابط Cloudflare Worker</label>
+      <input id="workerUrl" placeholder="https://crypto-market-bot.اسمك.workers.dev" dir="ltr">
+      <label>مفتاح لوحة التحكم ADMIN_KEY</label>
+      <input id="adminKey" type="password" placeholder="أدخل المفتاح الذي أعددته في Cloudflare" dir="ltr">
+      <button id="loadBtn" class="secondary">تحميل الإعدادات الحالية</button>
+      <p class="hint">لا تضع Telegram Bot Token هنا. التوكن يبقى محفوظاً داخل Cloudflare Secrets فقط.</p>
+    </section>
+
+    <section class="panel">
+      <h2>إعدادات المنشور</h2>
+      <label>عنوان المنشور</label>
+      <input id="title" value="CRYPTO MARKET" maxlength="50">
+      <label>أزواج Binance Spot مقابل USDT</label>
+      <textarea id="symbols" rows="9" dir="ltr" spellcheck="false">BTCUSDT
+ETHUSDT
+BNBUSDT
+SOLUSDT
+XRPUSDT</textarea>
+      <p class="hint">اكتب كل زوج بسطر، مثال BTCUSDT. يجب أن يكون الزوج متاحاً في Binance Spot ومقابلاً لـ USDT.</p>
+      <div class="checks">
+        <label class="check"><input id="showHighLow" type="checkbox" checked> إظهار أعلى وأدنى سعر خلال 24 ساعة</label>
+        <label class="check"><input id="showVolume" type="checkbox" checked> إظهار حجم التداول خلال 24 ساعة</label>
+      </div>
+      <div class="actions">
+        <button id="saveBtn">حفظ الإعدادات</button>
+        <button id="publishBtn" class="secondary">نشر / تحديث الآن</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>حالة البوت</h2>
+      <div id="status" class="status">أدخل رابط Worker ومفتاح الإدارة أولاً.</div>
+    </section>
+
+    <div id="notice" role="status"></div>
+    <footer>الأسعار من Binance Public Spot Market Data · التحديث المجدول كل دقيقة</footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
