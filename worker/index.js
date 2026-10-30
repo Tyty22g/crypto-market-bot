@@ -1,4 +1,3 @@
-
 const DEFAULT_CONFIG = {
   symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"],
   title: "KRYPTON MARKETS",
@@ -12,7 +11,8 @@ const JSON_HEADERS = {
   "cache-control": "no-store"
 };
 
-const BINANCE_ENDPOINTS = [
+const endpoints = [
+  "https://api.binance.com",
   "https://api1.binance.com",
   "https://api-gcp.binance.com",
   "https://api2.binance.com",
