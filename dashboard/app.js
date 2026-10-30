@@ -13,10 +13,12 @@ function readSymbols(){
   return [...new Set($("symbols").value.split(/[\n,،\s]+/).map(x=>x.trim().toUpperCase()).filter(Boolean))];
 }
 function showState(data){
-  const state=data.state || {};
-  $("status").innerHTML = state.message_id
-    ? `متصل. رقم المنشور: <b>${state.message_id}</b><br>آخر عملية ناجحة: ${state.updated_at || "غير متوفر"}<br>عدد الأزواج المحددة: ${(data.config?.symbols || []).length}`
-    : "لم يتم إنشاء منشور بعد. اضغط «نشر / تحديث الآن».";
+  const s=data.state || {};
+  const line=(name,x)=> x ? `${name}: #${x.message_id} · ${x.published_at}` : `${name}: —`;
+  $("status").innerHTML =
+    `${line("الأسعار",s.price)}<br>${line("تحليل الساعة",s.hourly)}<br>${line("تقرير 4 ساعات",s.four_hour)}<br>` +
+    `عدد الأزواج: ${(data.config?.symbols || []).length}` +
+    (s.last_error ? `<br>⚠️ آخر خطأ (${s.last_error.job}): ${s.last_error.message} · ${s.last_error.at}` : "");
 }
 $("loadBtn").addEventListener("click", async()=>{
   try{
@@ -25,6 +27,7 @@ $("loadBtn").addEventListener("click", async()=>{
     $("symbols").value=(data.config.symbols || []).join("\n");
     $("showHighLow").checked=data.config.showHighLow !== false;
     $("showVolume").checked=data.config.showVolume !== false;
+    $("priceEveryMinutes").value=String(data.config.priceEveryMinutes || 5);
     showState(data); notice("تم تحميل الإعدادات بنجاح.");
   }catch(e){notice(e.message,"err");}
 });
@@ -34,7 +37,8 @@ $("saveBtn").addEventListener("click", async()=>{
       title:$("title").value.trim(),
       symbols:readSymbols(),
       showHighLow:$("showHighLow").checked,
-      showVolume:$("showVolume").checked
+      showVolume:$("showVolume").checked,
+      priceEveryMinutes:Number($("priceEveryMinutes").value)
     })});
     notice(`تم حفظ ${data.config.symbols.length} زوج تداول. اضغط نشر / تحديث الآن لتطبيق التغيير فوراً.`);
   }catch(e){notice(e.message,"err");}
