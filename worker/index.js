@@ -23,6 +23,7 @@ function cors(response) {
   h.set("access-control-allow-origin", "*");
   h.set("access-control-allow-methods", "GET, POST, OPTIONS");
   h.set("access-control-allow-headers", "Content-Type, Authorization");
+
   return new Response(response.body, {
     status: response.status,
     headers: h
@@ -31,6 +32,7 @@ function cors(response) {
 
 function isAuthorized(request, env) {
   const supplied = request.headers.get("authorization") || "";
+
   return Boolean(env.ADMIN_KEY) &&
     supplied === `Bearer ${env.ADMIN_KEY}`;
 }
@@ -40,6 +42,7 @@ function checkKV(env) {
     const error = new Error(
       "KV_BINDING_MISSING: لم يتم ربط KV بالاسم CONFIG داخل إعدادات Worker"
     );
+
     error.code = "KV_BINDING_MISSING";
     throw error;
   }
@@ -88,6 +91,7 @@ function cleanSymbols(value) {
 
 function fmtPrice(value) {
   const n = Number(value);
+
   if (!Number.isFinite(n)) return String(value);
 
   return n.toLocaleString("en-US", {
@@ -97,6 +101,7 @@ function fmtPrice(value) {
 
 function fmtMoney(value) {
   const n = Number(value);
+
   if (!Number.isFinite(n)) return String(value);
 
   return n.toLocaleString("en-US", {
@@ -201,18 +206,14 @@ async function getBinanceTickers(symbols) {
       errors.push({
         endpoint: base,
         type: "BINANCE_NETWORK_ERROR",
-        details: error.message
+        details: error.message || String(error)
       });
     }
   }
 
-  const has403 = errors.some(e => e.type === "BINANCE_HTTP_403");
+  const error = new Error("BINANCE_ALL_ENDPOINTS_FAILED");
 
-  const error = new Error(
-    "BINANCE_ALL_ENDPOINTS_FAILED"
-  );
-
-  error.code = has403
+  error.code = errors.some(e => e.type === "BINANCE_HTTP_403")
     ? "BINANCE_HTTP_403"
     : "BINANCE_CONNECTION_FAILED";
 
@@ -235,6 +236,7 @@ function buildMessage(config, tickers) {
       rows.push(
         `⚪ <b>${escapeHtml(symbol)}</b> — لا توجد بيانات حالياً`
       );
+
       continue;
     }
 
@@ -343,7 +345,6 @@ async function publish(env) {
       });
 
     } catch (error) {
-      // If the old message cannot be edited, send a new one.
       if (
         !String(error.message).includes("message is not modified")
       ) {
@@ -353,6 +354,7 @@ async function publish(env) {
           parse_mode: "HTML",
           disable_web_page_preview: true
         });
+
       } else {
         result = {
           message_id: state.message_id
@@ -469,7 +471,12 @@ export default {
       return cors(await handleRequest(request, env));
 
     } catch (error) {
-      console.error("Worker error:", error);
+      console.error("Worker error:", JSON.stringify({
+        message: error.message,
+        code: error.code || null,
+        details: error.details || null,
+        stack: error.stack || null
+      }));
 
       return cors(json({
         ok: false,
@@ -483,7 +490,16 @@ export default {
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(
       publish(env).catch(error => {
-        console.error("Scheduled publish failed:", error);
+        console.error(
+          "SCHEDULED_PUBLISH_FAILED",
+          JSON.stringify({
+            message: error.message || String(error),
+            code: error.code || null,
+            details: error.details || null,
+            stack: error.stack || null,
+            time: new Date().toISOString()
+          })
+        );
       })
     );
   }
