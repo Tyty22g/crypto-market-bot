@@ -1,627 +1,722 @@
-
 const DEFAULT_CONFIG = {
-  symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"],
-  showHighLow: true,
-  showVolume: true,
-  title: "CRYPTO MARKET"
+  symbols: [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT"
+  ],
+  channelUsername: "@Krypton_coins",
+  channelUrl: "https://t.me/Krypton_coins",
+  title: "KRYPTON MARKETS",
+  maxCoins: 20
 };
 
-const JSON_HEADERS = {
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store"
-};
+const CONFIG_KEY = "bot_config";
+const STATE_KEY = "bot_state";
 
-const BINANCE_ENDPOINTS = [
+const BINANCE_HOSTS = [
+  "https://api.binance.com",
   "https://api1.binance.com",
-  "https://api-gcp.binance.com",
   "https://api2.binance.com",
   "https://api3.binance.com",
   "https://api4.binance.com",
   "https://data-api.binance.vision"
 ];
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data, null, 2), {
-    status,
-    headers: JSON_HEADERS
-  });
-}
 
-function cors(response) {
-  const h = new Headers(response.headers);
+// ==========================================
+// Cloudflare Worker entry points
+// ==========================================
 
-  h.set("access-control-allow-origin", "*");
-  h.set("access-control-allow-methods", "GET, POST, OPTIONS");
-  h.set("access-control-allow-headers", "Content-Type, Authorization");
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const path = url.pathname;
 
-  return new Response(response.body, {
-    status: response.status,
-    headers: h
-  });
-}
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders()
+      });
+    }
 
-function isAuthorized(request, env) {
-  const supplied = request.headers.get("authorization") || "";
+    try {
+      if (path === "/api/status" && request.method === "GET") {
+        return jsonResponse({
+          ok: true,
+          worker: "KRYPTON MARKETS",
+          status: "online",
+          time: new Date().toISOString()
+        });
+      }
 
-  return Boolean(env.ADMIN_KEY) &&
-    supplied === `Bearer ${env.ADMIN_KEY}`;
-}
+      if (path === "/api/config") {
+        if (!isAdmin(request, env)) {
+          return jsonResponse(
+            { ok: false, error: "Unauthorized" },
+            401
+          );
+        }
 
-function checkKV(env) {
-  if (!env.CONFIG) {
-    const error = new Error(
-      "KV_BINDING_MISSING: KV binding CONFIG is missing"
+        if (request.method === "GET") {
+          const config = await getConfig(env);
+
+          return jsonResponse({
+            ok: true,
+            config
+          });
+        }
+
+        if (request.method === "POST") {
+          const body = await request.json();
+
+          // Accept either {config:{...}} or a direct config object.
+          const incoming = body.config || body;
+
+          if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
+            return jsonResponse({
+              ok: false,
+              error: "Invalid configuration"
+            }, 400);
+          }
+
+          const current = await getConfig(env);
+          const updated = normalizeConfig({
+            ...current,
+            ...incoming
+          });
+
+          await env.CONFIG.put(
+            CONFIG_KEY,
+            JSON.stringify(updated)
+          );
+
+          return jsonResponse({
+            ok: true,
+            message: "Configuration saved",
+            config: updated
+          });
+        }
+
+        return jsonResponse({
+          ok: false,
+          error: "Method not allowed"
+        }, 405);
+      }
+
+      if (path === "/api/publish" && request.method === "POST") {
+        if (!isAdmin(request, env)) {
+          return jsonResponse(
+            { ok: false, error: "Unauthorized" },
+            401
+          );
+        }
+
+        const result = await publish(env);
+
+        return jsonResponse({
+          ok: true,
+          message: "Telegram post published",
+          result
+        });
+      }
+
+      return jsonResponse({
+        ok: false,
+        error: "Not found"
+      }, 404);
+
+    } catch (error) {
+      console.error("Request failed:", error);
+
+      return jsonResponse({
+        ok: false,
+        error: error.message || "Internal server error"
+      }, 500);
+    }
+  },
+
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(
+      publish(env).catch(async error => {
+        console.error("Scheduled publish failed:", error);
+
+        await saveState(env, {
+          lastError: error.message || String(error),
+          lastErrorAt: new Date().toISOString()
+        });
+      })
     );
+  }
+};
 
-    error.code = "KV_BINDING_MISSING";
-    throw error;
+
+// ==========================================
+// Configuration
+// ==========================================
+
+async function getConfig(env) {
+  const saved = await env.CONFIG.get(CONFIG_KEY);
+
+  if (!saved) {
+    return { ...DEFAULT_CONFIG };
+  }
+
+  try {
+    return normalizeConfig({
+      ...DEFAULT_CONFIG,
+      ...JSON.parse(saved)
+    });
+  } catch (error) {
+    console.error("Invalid saved config:", error);
+    return { ...DEFAULT_CONFIG };
   }
 }
 
-async function getConfig(env) {
-  checkKV(env);
+function normalizeConfig(config) {
+  let symbols = Array.isArray(config.symbols)
+    ? config.symbols
+    : DEFAULT_CONFIG.symbols;
 
-  const saved = await env.CONFIG.get("bot_config", "json");
+  symbols = symbols
+    .map(symbol => String(symbol).trim().toUpperCase())
+    .filter(symbol => /^[A-Z0-9]{4,20}$/.test(symbol));
+
+  if (!symbols.length) {
+    symbols = [...DEFAULT_CONFIG.symbols];
+  }
+
+  const maxCoins = Number(config.maxCoins);
 
   return {
     ...DEFAULT_CONFIG,
-    ...(saved || {})
+    ...config,
+    symbols: [...new Set(symbols)],
+    maxCoins: Number.isFinite(maxCoins)
+      ? Math.max(1, Math.min(50, Math.floor(maxCoins)))
+      : DEFAULT_CONFIG.maxCoins
   };
 }
 
-function cleanSymbols(value) {
-  if (!Array.isArray(value)) {
-    throw new Error("INVALID_SYMBOLS: Invalid coin list");
+
+// ==========================================
+// Binance data
+// ==========================================
+
+async function binanceRequest(endpoint) {
+  let lastError = null;
+
+  for (const host of BINANCE_HOSTS) {
+    try {
+      const response = await fetch(
+        host + endpoint,
+        {
+          method: "GET",
+          headers: {
+            "Accept": "application/json"
+          }
+        }
+      );
+
+      if (!response.ok) {
+        const message = await response.text();
+
+        throw new Error(
+          `Binance ${response.status}: ${message.slice(0, 200)}`
+        );
+      }
+
+      return await response.json();
+
+    } catch (error) {
+      lastError = error;
+      console.error(
+        "Binance endpoint failed:",
+        host,
+        error.message
+      );
+    }
   }
 
-  const symbols = [
-    ...new Set(
-      value.map(x => String(x).trim().toUpperCase()).filter(Boolean)
-    )
-  ];
+  throw new Error(
+    "All Binance endpoints failed: " +
+    (lastError?.message || "Unknown error")
+  );
+}
 
-  if (!symbols.length) {
-    throw new Error("EMPTY_SYMBOLS: Add at least one coin");
+async function getBinanceTickers(symbols) {
+  const [dailyData, hourlyData] = await Promise.all([
+    binanceRequest("/api/v3/ticker/24hr"),
+    binanceRequest("/api/v3/ticker?windowSize=1h")
+  ]);
+
+  if (!Array.isArray(dailyData)) {
+    throw new Error("Invalid Binance 24H response");
   }
 
-  if (symbols.some(s =>
-    !/^[A-Z0-9]{5,20}$/.test(s) || !s.endsWith("USDT")
-  )) {
-    throw new Error(
-      "INVALID_SYMBOL_FORMAT: Use Binance Spot USDT pairs such as BTCUSDT"
-    );
+  if (!Array.isArray(hourlyData)) {
+    throw new Error("Invalid Binance 1H response");
   }
 
-  if (symbols.length > 100) {
-    throw new Error("TOO_MANY_SYMBOLS: Maximum 100 pairs");
+  const dailyMap = new Map(
+    dailyData.map(item => [item.symbol, item])
+  );
+
+  const hourlyMap = new Map(
+    hourlyData.map(item => [item.symbol, item])
+  );
+
+  const results = [];
+
+  for (const symbol of symbols) {
+    const daily = dailyMap.get(symbol);
+    const hourly = hourlyMap.get(symbol);
+
+    if (!daily) {
+      console.warn("Symbol not found on Binance:", symbol);
+      continue;
+    }
+
+    const price = Number(daily.lastPrice);
+    const change24 = Number(daily.priceChange);
+    const change24Percent = Number(daily.priceChangePercent);
+
+    const change1 = hourly
+      ? Number(hourly.priceChange)
+      : 0;
+
+    const change1Percent = hourly
+      ? Number(hourly.priceChangePercent)
+      : 0;
+
+    if (!Number.isFinite(price) || price <= 0) {
+      continue;
+    }
+
+    results.push({
+      symbol,
+      price,
+      change1,
+      change1Percent,
+      change24,
+      change24Percent,
+      high24: Number(daily.highPrice),
+      low24: Number(daily.lowPrice),
+      volume24: Number(daily.quoteVolume),
+      trades24: Number(daily.count)
+    });
   }
 
-  return symbols;
+  if (!results.length) {
+    throw new Error("No valid coin data received from Binance");
+  }
+
+  return results;
 }
 
-function fmtPrice(value) {
-  const n = Number(value);
 
-  if (!Number.isFinite(n)) return String(value);
-
-  return n.toLocaleString("en-US", {
-    maximumSignificantDigits: 9
-  });
-}
-
-function fmtMoney(value) {
-  const n = Number(value);
-
-  if (!Number.isFinite(n)) return String(value);
-
-  return n.toLocaleString("en-US", {
-    maximumSignificantDigits: 7
-  });
-}
-
-function fmtPercent(value) {
-  const n = Number(value);
-
-  if (!Number.isFinite(n)) return "N/A";
-
-  const sign = n > 0 ? "+" : "";
-
-  return `${sign}${n.toFixed(2)}%`;
-}
-
-function fmtChange(value) {
-  const n = Number(value);
-
-  if (!Number.isFinite(n)) return "N/A";
-
-  const sign = n > 0 ? "+" : "";
-
-  return sign + fmtPrice(n);
-}
+// ==========================================
+// Formatting
+// ==========================================
 
 function utcTime() {
   return new Date()
     .toISOString()
     .replace("T", " ")
-    .slice(0, 19) + " GMT";
+    .replace(/\.\d{3}Z$/, " UTC");
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
-// Build query parameters for Binance
-function buildTickerParams(symbols, windowSize = null) {
-  const params = new URLSearchParams();
+function formatPrice(value) {
+  if (!Number.isFinite(value)) return "N/A";
 
-  if (symbols.length === 1) {
-    params.set("symbol", symbols[0]);
-  } else {
-    params.set("symbols", JSON.stringify(symbols));
-  }
-
-  if (windowSize) {
-    params.set("windowSize", windowSize);
-  }
-
-  return params.toString();
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: value < 1 ? 8 : 4
+  }).format(value);
 }
 
-// Fetch Binance data with automatic endpoint fallback
-async function fetchBinanceArray(path, params, label) {
-  const errors = [];
+function formatNumber(value) {
+  if (!Number.isFinite(value)) return "N/A";
 
-  for (const base of BINANCE_ENDPOINTS) {
-    try {
-      const url = `${base}${path}?${params}`;
-
-      const response = await fetch(url, {
-        method: "GET",
-        headers: {
-          "Accept": "application/json"
-        },
-        cf: {
-          cacheTtl: 0,
-          cacheEverything: false
-        }
-      });
-
-      const body = await response.text();
-
-      if (!response.ok) {
-        errors.push({
-          endpoint: base,
-          type: `BINANCE_HTTP_${response.status}`,
-          details: body.slice(0, 250)
-        });
-
-        continue;
-      }
-
-      let data;
-
-      try {
-        data = JSON.parse(body);
-      } catch {
-        errors.push({
-          endpoint: base,
-          type: "BINANCE_INVALID_JSON",
-          details: body.slice(0, 200)
-        });
-
-        continue;
-      }
-
-      if (!Array.isArray(data)) {
-        errors.push({
-          endpoint: base,
-          type: "BINANCE_INVALID_RESPONSE",
-          details: JSON.stringify(data).slice(0, 200)
-        });
-
-        continue;
-      }
-
-      console.log(`${label}_CONNECTED:`, base);
-
-      return {
-        data,
-        endpoint: base
-      };
-
-    } catch (error) {
-      errors.push({
-        endpoint: base,
-        type: "BINANCE_NETWORK_ERROR",
-        details: error.message || String(error)
-      });
-    }
-  }
-
-  console.error(
-    `${label}_DIAGNOSTICS:`,
-    JSON.stringify(errors)
-  );
-
-  const error = new Error(`${label}_ALL_ENDPOINTS_FAILED`);
-
-  error.code = `${label}_ALL_ENDPOINTS_FAILED`;
-  error.details = errors;
-
-  throw error;
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 2
+  }).format(value);
 }
 
-// Fetch both 24-hour and 1-hour market statistics
-async function getBinanceTickers(symbols) {
-  const params24h = buildTickerParams(symbols);
+function formatPercent(value) {
+  if (!Number.isFinite(value)) return "N/A";
 
-  const params1h = buildTickerParams(symbols, "1h");
+  const sign = value > 0 ? "+" : "";
 
-  const result24h = await fetchBinanceArray(
-    "/api/v3/ticker/24hr",
-    params24h,
-    "BINANCE_24H"
-  );
-
-  const result1h = await fetchBinanceArray(
-    "/api/v3/ticker",
-    params1h,
-    "BINANCE_1H"
-  );
-
-  return {
-    data: result24h.data,
-    hourlyData: result1h.data,
-    endpoint: result24h.endpoint,
-    hourlyEndpoint: result1h.endpoint
-  };
+  return sign + value.toFixed(2) + "%";
 }
 
-// Build professional English market report
-function buildMessage(config, market) {
-  const tickers = market.data;
-  const hourlyTickers = market.hourlyData;
+function formatChange(value) {
+  if (!Number.isFinite(value)) return "N/A";
 
-  const bySymbol = new Map(
-    tickers.map(t => [t.symbol, t])
+  const sign = value > 0 ? "+" : "";
+
+  return sign + formatPrice(value);
+}
+
+function movementIcon(value) {
+  if (value > 0) return "🟢 ▲";
+  if (value < 0) return "🔴 ▼";
+  return "⚪";
+}
+
+function shortSymbol(symbol) {
+  return symbol.endsWith("USDT")
+    ? symbol.slice(0, -4) + "/USDT"
+    : symbol;
+}
+
+
+// ==========================================
+// Build Telegram report
+// ==========================================
+
+function buildMessage(coins, config) {
+  const sorted = [...coins].sort(
+    (a, b) => b.change24Percent - a.change24Percent
   );
 
-  const hourlyBySymbol = new Map(
-    hourlyTickers.map(t => [t.symbol, t])
+  const gainers = [...coins]
+    .filter(coin => coin.change24Percent > 0)
+    .sort((a, b) => b.change24Percent - a.change24Percent)
+    .slice(0, 3);
+
+  const losers = [...coins]
+    .filter(coin => coin.change24Percent < 0)
+    .sort((a, b) => a.change24Percent - b.change24Percent)
+    .slice(0, 3);
+
+  const unchanged = coins.filter(
+    coin => coin.change24Percent === 0
+  ).length;
+
+  const positive = coins.filter(
+    coin => coin.change24Percent > 0
+  ).length;
+
+  const negative = coins.filter(
+    coin => coin.change24Percent < 0
+  ).length;
+
+  const averageChange = coins.reduce(
+    (sum, coin) => sum + coin.change24Percent,
+    0
+  ) / coins.length;
+
+  const lines = [];
+
+  lines.push("🌐 <b>KRYPTON MARKETS</b>");
+  lines.push("<i>Real-Time Cryptocurrency Market Report</i>");
+  lines.push("━━━━━━━━━━━━━━━━━━━━");
+  lines.push("🕒 <b>Updated:</b> " + utcTime());
+  lines.push("📊 <b>Market Overview</b>");
+  lines.push(
+    "🟢 Gainers: <b>" + positive + "</b>   " +
+    "🔴 Losers: <b>" + negative + "</b>   " +
+    "⚪ Unchanged: <b>" + unchanged + "</b>"
   );
-
-  const validTickers = config.symbols
-    .map(symbol => bySymbol.get(symbol))
-    .filter(Boolean);
-
-  const gainers = validTickers.filter(
-    t => Number(t.priceChangePercent) > 0
+  lines.push(
+    "📈 Average 24H Change: <b>" +
+    formatPercent(averageChange) + "</b>"
   );
+  lines.push("━━━━━━━━━━━━━━━━━━━━");
 
-  const losers = validTickers.filter(
-    t => Number(t.priceChangePercent) < 0
-  );
+  lines.push("<b>💹 COIN MARKET DATA</b>");
+  lines.push("");
 
-  const unchanged = validTickers.filter(
-    t => Number(t.priceChangePercent) === 0
-  );
+  for (const coin of sorted.slice(0, config.maxCoins)) {
+    const symbol = escapeHtml(shortSymbol(coin.symbol));
 
-  const sorted = [...validTickers].sort(
-    (a, b) =>
-      Number(b.priceChangePercent) -
-      Number(a.priceChangePercent)
-  );
-
-  const strongest = sorted[0];
-  const weakest = sorted[sorted.length - 1];
-
-  const rows = [];
-
-  for (const symbol of config.symbols) {
-    const t = bySymbol.get(symbol);
-    const h = hourlyBySymbol.get(symbol);
-
-    if (!t) {
-      rows.push(
-        `⚪ <b>${escapeHtml(symbol)}</b>\n` +
-        `Market data unavailable`
-      );
-
-      continue;
-    }
-
-    const change24 = Number(t.priceChange);
-    const pct24 = Number(t.priceChangePercent);
-
-    const change1h = h ? Number(h.priceChange) : NaN;
-    const pct1h = h ? Number(h.priceChangePercent) : NaN;
-
-    const arrow24 =
-      pct24 > 0 ? "🟢 ▲" :
-      pct24 < 0 ? "🔴 ▼" : "⚪ ●";
-
-    const arrow1h =
-      pct1h > 0 ? "🟢 ▲" :
-      pct1h < 0 ? "🔴 ▼" : "⚪ ●";
-
-    const coinName = symbol.replace(/USDT$/, "");
-
-    let line =
-      `${arrow24} <b>${escapeHtml(coinName)}/USDT</b>\n`;
-
-    line +=
-      `💰 Price: <b>$${fmtPrice(t.lastPrice)}</b>\n`;
-
-    line +=
-      `📈 1H Change: ${arrow1h} ${fmtPercent(pct1h)} ` +
-      `(${fmtChange(change1h)} USDT)\n`;
-
-    line +=
-      `📊 24H Change: ${arrow24} ${fmtPercent(pct24)} ` +
-      `(${fmtChange(change24)} USDT)`;
-
-    if (config.showHighLow) {
-      line +=
-        `\n🔺 24H High: $${fmtPrice(t.highPrice)}` +
-        `\n🔻 24H Low: $${fmtPrice(t.lowPrice)}`;
-    }
-
-    if (config.showVolume) {
-      line +=
-        `\n💵 24H Volume: $${fmtMoney(t.quoteVolume)}`;
-    }
-
-    if (Number.isFinite(Number(t.count))) {
-      line +=
-        `\n🔄 24H Trades: ${Number(t.count).toLocaleString("en-US")}`;
-    }
-
-    rows.push(line);
-  }
-
-  const summary = [
-    `🟢 Gainers: ${gainers.length}`,
-    `🔴 Losers: ${losers.length}`,
-    `⚪ Unchanged: ${unchanged.length}`
-  ].join("  |  ");
-
-  let highlights = "";
-
-  if (strongest && weakest) {
-    highlights =
-      `\n🏆 Top Performer: ${escapeHtml(strongest.symbol.replace(/USDT$/, ""))} ` +
-      `(${fmtPercent(strongest.priceChangePercent)})` +
-      `\n📉 Worst Performer: ${escapeHtml(weakest.symbol.replace(/USDT$/, ""))} ` +
-      `(${fmtPercent(weakest.priceChangePercent)})`;
-  }
-
-  const header =
-    `🌐 <b>${escapeHtml(config.title || "CRYPTO MARKET")}</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `📡 BINANCE SPOT MARKET | USDT\n` +
-    `⏱ Market Overview\n` +
-    `${summary}` +
-    `${highlights}\n` +
-    `━━━━━━━━━━━━━━━━━━━━`;
-
-  const footer =
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `🕒 Last Update: ${utcTime()}\n` +
-    `📊 Data Source: Binance Spot\n` +
-    `⚠️ Market data only. Not financial advice.`;
-
-  const message =
-    `${header}\n\n` +
-    `${rows.join("\n\n━━━━━━━━━━━━━━━━━━━━\n\n")}\n\n` +
-    `${footer}`;
-
-  if (message.length > 3900) {
-    throw new Error(
-      "TELEGRAM_MESSAGE_TOO_LONG: Reduce the number of coins or disable extra details"
+    lines.push(
+      "<b>" + symbol + "</b>  " +
+      movementIcon(coin.change24Percent)
     );
+
+    lines.push(
+      "💵 Price: <b>$" +
+      formatPrice(coin.price) + "</b>"
+    );
+
+    lines.push(
+      "⏱ 1H: " +
+      formatPercent(coin.change1Percent) +
+      "  (" + formatChange(coin.change1) + ")"
+    );
+
+    lines.push(
+      "📅 24H: " +
+      formatPercent(coin.change24Percent) +
+      "  (" + formatChange(coin.change24) + ")"
+    );
+
+    lines.push(
+      "🔺 High: $" + formatPrice(coin.high24) +
+      "  |  🔻 Low: $" + formatPrice(coin.low24)
+    );
+
+    lines.push(
+      "📦 Volume: $" + formatNumber(coin.volume24) +
+      "  |  🔄 Trades: " + formatNumber(coin.trades24)
+    );
+
+    lines.push("────────────────────");
+  }
+
+  lines.push("");
+  lines.push("🏆 <b>TOP 3 GAINERS (24H)</b>");
+
+  if (gainers.length) {
+    for (const coin of gainers) {
+      lines.push(
+        "🟢 " + escapeHtml(shortSymbol(coin.symbol)) +
+        ": <b>" + formatPercent(coin.change24Percent) + "</b>"
+      );
+    }
+  } else {
+    lines.push("No gainers in the selected coins.");
+  }
+
+  lines.push("");
+  lines.push("📉 <b>TOP 3 LOSERS (24H)</b>");
+
+  if (losers.length) {
+    for (const coin of losers) {
+      lines.push(
+        "🔴 " + escapeHtml(shortSymbol(coin.symbol)) +
+        ": <b>" + formatPercent(coin.change24Percent) + "</b>"
+      );
+    }
+  } else {
+    lines.push("No losers in the selected coins.");
+  }
+
+  lines.push("");
+  lines.push("━━━━━━━━━━━━━━━━━━━━");
+  lines.push("<b>KRYPTON MARKETS</b>");
+  lines.push("<i>Stay Ahead • Stay Informed</i>");
+  lines.push("");
+  lines.push(
+    "Follow us for real-time crypto prices, " +
+    "market trends and smart alerts."
+  );
+  lines.push(
+    "📢 " + escapeHtml(config.channelUsername)
+  );
+  lines.push("");
+  lines.push("<i>Market data provided by Binance Spot.</i>");
+  lines.push(
+    "<i>For informational purposes only. Not financial advice.</i>"
+  );
+
+  let message = lines.join("\n");
+
+  // Telegram message limit is 4096 characters.
+  // Keep a safety margin for Telegram HTML parsing.
+  if (message.length > 3900) {
+    message = message.slice(0, 3850);
+    message += "\n\n<i>Report shortened to fit Telegram.</i>";
   }
 
   return message;
 }
 
-async function telegramCall(env, method, payload) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
-    throw new Error(
-      "TELEGRAM_SECRETS_MISSING: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing"
-    );
+
+// ==========================================
+// Telegram publishing
+// ==========================================
+
+async function sendTelegramMessage(env, text, config) {
+  if (!env.TELEGRAM_BOT_TOKEN) {
+    throw new Error("TELEGRAM_BOT_TOKEN secret is missing");
   }
 
-  const response = await fetch(
-    `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json"
-      },
-      body: JSON.stringify(payload)
-    }
-  );
+  if (!env.TELEGRAM_CHAT_ID) {
+    throw new Error("TELEGRAM_CHAT_ID secret is missing");
+  }
+
+  const channelUrl = config.channelUrl ||
+    "https://t.me/Krypton_coins";
+
+  const keyboard = {
+    inline_keyboard: [
+      [
+        {
+          text: "📢 JOIN KRYPTON MARKETS",
+          url: channelUrl
+        }
+      ]
+    ]
+  };
+
+  const telegramUrl =
+    "https://api.telegram.org/bot" +
+    env.TELEGRAM_BOT_TOKEN +
+    "/sendMessage";
+
+  const response = await fetch(telegramUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      chat_id: env.TELEGRAM_CHAT_ID,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      reply_markup: keyboard
+    })
+  });
 
   const result = await response.json();
 
   if (!response.ok || !result.ok) {
     throw new Error(
-      `TELEGRAM_HTTP_${response.status}: ${result.description || "Telegram request failed"}`
+      "Telegram API error: " +
+      (result.description || response.status)
     );
   }
 
   return result.result;
 }
 
-// Always publish a NEW message
-async function publish(env) {
-  checkKV(env);
 
+// ==========================================
+// Publish a NEW post every time
+// ==========================================
+
+async function publish(env) {
   const config = await getConfig(env);
 
-  const market = await getBinanceTickers(config.symbols);
-
-  const text = buildMessage(config, market);
-
-  const result = await telegramCall(env, "sendMessage", {
-    chat_id: env.TELEGRAM_CHAT_ID,
-    text,
-    parse_mode: "HTML",
-    disable_web_page_preview: true
-  });
-
-  await env.CONFIG.put(
-    "bot_state",
-    JSON.stringify({
-      message_id: result.message_id,
-      chat_id: env.TELEGRAM_CHAT_ID,
-      updated_at: new Date().toISOString()
-    })
+  console.log(
+    "Starting Krypton Markets publication:",
+    config.symbols.join(", ")
   );
 
+  const coins = await getBinanceTickers(config.symbols);
+
+  const message = buildMessage(coins, config);
+
+  // Always send a NEW Telegram message.
+  // This does not edit the previous post.
+  const telegramMessage = await sendTelegramMessage(
+    env,
+    message,
+    config
+  );
+
+  const state = {
+    lastMessageId: telegramMessage.message_id,
+    lastChatId: telegramMessage.chat.id,
+    lastPublishedAt: new Date().toISOString(),
+    lastCoinCount: coins.length,
+    lastError: null,
+    lastErrorAt: null
+  };
+
+  await saveState(env, state);
+
   console.log(
-    "TELEGRAM_NEW_MESSAGE_PUBLISHED:",
-    result.message_id
+    "Krypton Markets published successfully. Message ID:",
+    telegramMessage.message_id
   );
 
   return {
-    ok: true,
-    message_id: result.message_id,
-    updated_at: new Date().toISOString(),
-    count: config.symbols.length,
-    binance_endpoint: market.endpoint,
-    hourly_endpoint: market.hourlyEndpoint,
-    publish_mode: "NEW_MESSAGE"
+    messageId: telegramMessage.message_id,
+    coinsPublished: coins.length,
+    publishedAt: state.lastPublishedAt
   };
 }
 
-async function handleRequest(request, env) {
-  const url = new URL(request.url);
 
-  if (request.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204
-    });
+// ==========================================
+// State
+// ==========================================
+
+async function getState(env) {
+  const saved = await env.CONFIG.get(STATE_KEY);
+
+  if (!saved) return {};
+
+  try {
+    return JSON.parse(saved);
+  } catch {
+    return {};
   }
-
-  if (!url.pathname.startsWith("/api/")) {
-    return json({
-      ok: true,
-      service: "Crypto Market Bot",
-      message: "Worker is running",
-      publish_mode: "NEW_MESSAGE"
-    });
-  }
-
-  if (!isAuthorized(request, env)) {
-    return json({
-      ok: false,
-      error_type: "UNAUTHORIZED",
-      error: "Check ADMIN_KEY"
-    }, 401);
-  }
-
-  if (
-    url.pathname === "/api/config" &&
-    request.method === "GET"
-  ) {
-    const config = await getConfig(env);
-    const state = await env.CONFIG.get("bot_state", "json");
-
-    return json({
-      ok: true,
-      config,
-      state
-    });
-  }
-
-  if (
-    url.pathname === "/api/config" &&
-    request.method === "POST"
-  ) {
-    const body = await request.json();
-
-    const config = {
-      symbols: cleanSymbols(body.symbols),
-      showHighLow: body.showHighLow !== false,
-      showVolume: body.showVolume !== false,
-      title: String(body.title || "CRYPTO MARKET").slice(0, 50)
-    };
-
-    await env.CONFIG.put(
-      "bot_config",
-      JSON.stringify(config)
-    );
-
-    return json({
-      ok: true,
-      config
-    });
-  }
-
-  if (
-    url.pathname === "/api/publish" &&
-    request.method === "POST"
-  ) {
-    const result = await publish(env);
-
-    return json(result);
-  }
-
-  if (
-    url.pathname === "/api/status" &&
-    request.method === "GET"
-  ) {
-    const state = await env.CONFIG.get("bot_state", "json");
-
-    return json({
-      ok: true,
-      state
-    });
-  }
-
-  return json({
-    ok: false,
-    error_type: "NOT_FOUND",
-    error: "Route not found"
-  }, 404);
 }
 
-export default {
-  async fetch(request, env) {
-    try {
-      return cors(await handleRequest(request, env));
+async function saveState(env, updates) {
+  const current = await getState(env);
 
-    } catch (error) {
-      console.error("Worker error:", {
-        message: error.message,
-        code: error.code || null,
-        details: error.details || null,
-        stack: error.stack || null
-      });
+  const updated = {
+    ...current,
+    ...updates
+  };
 
-      return cors(json({
-        ok: false,
-        error_type: error.code || "WORKER_ERROR",
-        error: error.message || "Unknown error",
-        details: error.details || null
-      }, 500));
+  await env.CONFIG.put(
+    STATE_KEY,
+    JSON.stringify(updated)
+  );
+
+  return updated;
+}
+
+
+// ==========================================
+// Admin authentication
+// ==========================================
+
+function isAdmin(request, env) {
+  if (!env.ADMIN_KEY) return false;
+
+  const headerKey = request.headers.get("x-admin-key");
+
+  const authorization = request.headers.get("Authorization") || "";
+
+  const bearerKey = authorization.startsWith("Bearer ")
+    ? authorization.slice(7)
+    : "";
+
+  const suppliedKey = headerKey || bearerKey;
+
+  return suppliedKey === env.ADMIN_KEY;
+}
+
+
+// ==========================================
+// HTTP helpers
+// ==========================================
+
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers":
+      "Content-Type, Authorization, X-Admin-Key",
+    "Content-Type": "application/json; charset=utf-8"
+  };
+}
+
+function jsonResponse(data, status = 200) {
+  return new Response(
+    JSON.stringify(data),
+    {
+      status,
+      headers: corsHeaders()
     }
-  },
-
-  async scheduled(controller, env, ctx) {
-    ctx.waitUntil(
-      publish(env).catch(error => {
-        console.error("Scheduled publish failed:", {
-          message: error.message,
-          code: error.code || null,
-          details: error.details || null,
-          stack: error.stack || null
-        });
-      })
-    );
-  }
-};
+  );
+}
