@@ -825,7 +825,7 @@ export default {
     console.log("KRYPTON_MARKETS_CRON:", cron);
 
     // الأسعار كل 5 دقائق
-    if (cron === "*/5 * * * *") {
+    if (cron === "* * * * *") {
       ctx.waitUntil(
         publishPrices(env).catch(error => {
           console.error("PRICE_PUBLISH_FAILED:", error.message);
