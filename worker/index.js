@@ -792,7 +792,7 @@ export default {
 
     console.log("KRYPTON_MARKETS_CRON:", cron);
 
-    if (cron === "*/10 * * * *") {
+    if (cron === "* * * * *") {
       ctx.waitUntil(
         publishPrices(env).catch(error => {
           console.error("PRICE_PUBLISH_FAILED:", error.message);
