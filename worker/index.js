@@ -1,3 +1,4 @@
+
 const DEFAULT_CONFIG = {
   symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"],
   title: "KRYPTON MARKETS",
@@ -11,7 +12,7 @@ const JSON_HEADERS = {
   "cache-control": "no-store"
 };
 
-const endpoints = [
+const BINANCE_ENDPOINTS = [
   "https://api.binance.com",
   "https://api1.binance.com",
   "https://api-gcp.binance.com",
@@ -42,6 +43,7 @@ function cors(response) {
 
 function isAuthorized(request, env) {
   const supplied = request.headers.get("authorization") || "";
+
   return Boolean(env.ADMIN_KEY) &&
     supplied === `Bearer ${env.ADMIN_KEY}`;
 }
@@ -54,6 +56,7 @@ function checkKV(env) {
 
 async function getConfig(env) {
   checkKV(env);
+
   const saved = await env.CONFIG.get("bot_config", "json");
 
   return {
@@ -86,13 +89,23 @@ function cleanSymbols(value) {
   return symbols;
 }
 
+// تنسيق الأرقام مع معالجة digits = 0
 function fmt(value, digits = 8) {
   const n = Number(value);
 
   if (!Number.isFinite(n)) return "N/A";
 
+  if (digits <= 0) {
+    return Math.round(n).toLocaleString("en-US");
+  }
+
+  const safeDigits = Math.max(
+    1,
+    Math.min(21, Math.floor(digits))
+  );
+
   return n.toLocaleString("en-US", {
-    maximumSignificantDigits: digits
+    maximumSignificantDigits: safeDigits
   });
 }
 
@@ -135,8 +148,7 @@ function channelButton(config) {
   };
 }
 
-// Binance Spot 24-hour ticker.
-// طريقة الاتصال الأساسية محفوظة من الكود القديم.
+// Binance Spot 24-hour ticker
 async function getBinanceTickers(symbols) {
   const params = symbols.length === 1
     ? `symbol=${encodeURIComponent(symbols[0])}`
@@ -192,11 +204,11 @@ async function getBinanceTickers(symbols) {
   }
 
   console.error("BINANCE_ERRORS:", JSON.stringify(errors));
+
   throw new Error("BINANCE_ALL_ENDPOINTS_FAILED");
 }
 
-// بيانات ساعة واحدة من Binance نفسها.
-// لا يتم حفظ الأسعار في KV.
+// جلب شموع Binance
 async function getKlines(symbol, interval, limit) {
   const errors = [];
 
@@ -247,13 +259,14 @@ async function getKlines(symbol, interval, limit) {
   return null;
 }
 
+// آخر ساعة مكتملة، دون احتساب الشمعة المفتوحة حالياً
 async function getHourlyData(symbols) {
   const results = [];
 
   for (const symbol of symbols) {
-    const candles = await getKlines(symbol, "1h", 1);
+    const candles = await getKlines(symbol, "1h", 2);
 
-    if (!candles || !candles.length) {
+    if (!candles || candles.length < 2) {
       results.push({
         symbol,
         available: false
@@ -261,7 +274,8 @@ async function getHourlyData(symbols) {
       continue;
     }
 
-    const candle = candles[0];
+    const candle = candles[candles.length - 2];
+
     const open = Number(candle[1]);
     const close = Number(candle[4]);
     const change = close - open;
@@ -285,13 +299,14 @@ async function getHourlyData(symbols) {
   return results;
 }
 
+// آخر أربع ساعات مكتملة
 async function getFourHourData(symbols) {
   const results = [];
 
   for (const symbol of symbols) {
-    const candles = await getKlines(symbol, "1h", 4);
+    const candles = await getKlines(symbol, "1h", 5);
 
-    if (!candles || candles.length < 4) {
+    if (!candles || candles.length < 5) {
       results.push({
         symbol,
         available: false
@@ -299,8 +314,11 @@ async function getFourHourData(symbols) {
       continue;
     }
 
-    const first = candles[0];
-    const last = candles[candles.length - 1];
+    // استبعاد الشمعة الحالية غير المكتملة
+    const completedCandles = candles.slice(0, -1);
+
+    const first = completedCandles[0];
+    const last = completedCandles[completedCandles.length - 1];
 
     const open = Number(first[1]);
     const close = Number(last[4]);
@@ -394,13 +412,19 @@ function priceRows(config, tickers) {
     const pct = Number(t.priceChangePercent);
     const change = Number(t.priceChange);
 
-    const emoji = pct > 0 ? "🟢 ▲" : pct < 0 ? "🔴 ▼" : "⚪ ●";
+    const emoji =
+      pct > 0 ? "🟢 ▲" :
+      pct < 0 ? "🔴 ▼" :
+      "⚪ ●";
 
     let row =
       `${emoji} <b>${escapeHtml(coinName(symbol))}/USDT</b>\n`;
 
     row += `Price: <b>$${fmt(t.lastPrice)}</b>\n`;
-    row += `24H Change: ${signed(change, " USDT")} (${signed(pct, "%")})`;
+
+    row +=
+      `24H Change: ${signed(change, " USDT")} ` +
+      `(${signed(pct, "%")})`;
 
     if (config.showHighLow) {
       row +=
@@ -457,7 +481,8 @@ function buildHourlyMessage(config, tickers, hourly) {
 
   if (direction.average !== undefined) {
     message +=
-      `Average selected-coin movement: ${signed(direction.average, "%")}\n`;
+      `Average selected-coin movement: ` +
+      `${signed(direction.average, "%")}\n`;
   }
 
   message +=
@@ -492,7 +517,8 @@ function buildHourlyMessage(config, tickers, hourly) {
   if (btc && btc.available) {
     message +=
       `Price: $${fmt(btcTicker?.lastPrice || btc.close)}\n` +
-      `1H Change: ${signed(btc.change)} (${signed(btc.percent, "%")})\n`;
+      `1H Change: ${signed(btc.change)} ` +
+      `(${signed(btc.percent, "%")})\n`;
   } else {
     message += "Hourly Bitcoin data unavailable.\n";
   }
@@ -522,7 +548,8 @@ function buildFourHourMessage(config, fourHour) {
 
   if (direction.average !== undefined) {
     message +=
-      `Average selected-coin movement: ${signed(direction.average, "%")}\n`;
+      `Average selected-coin movement: ` +
+      `${signed(direction.average, "%")}\n`;
   }
 
   message +=
@@ -582,7 +609,8 @@ async function telegramCall(env, method, payload) {
 
   if (!response.ok || !result.ok) {
     throw new Error(
-      `TELEGRAM_HTTP_${response.status}: ${result.description || "Telegram error"}`
+      `TELEGRAM_HTTP_${response.status}: ` +
+      `${result.description || "Telegram error"}`
     );
   }
 
@@ -635,10 +663,7 @@ async function publishPrices(env) {
 async function publishHourly(env) {
   const config = await getConfig(env);
 
-  // بيانات الأسعار الحالية من نفس المصدر القديم.
   const market = await getBinanceTickers(config.symbols);
-
-  // بيانات تغير الساعة من Binance نفسها.
   const hourly = await getHourlyData(config.symbols);
 
   const message = buildHourlyMessage(
@@ -718,15 +743,22 @@ async function handleRequest(request, env) {
 
     const config = {
       symbols: cleanSymbols(body.symbols),
-      title: String(body.title || DEFAULT_CONFIG.title).slice(0, 50),
+      title: String(
+        body.title || DEFAULT_CONFIG.title
+      ).slice(0, 50),
+
       channelUrl: String(
         body.channelUrl || DEFAULT_CONFIG.channelUrl
       ),
+
       showHighLow: body.showHighLow !== false,
       showVolume: body.showVolume !== false
     };
 
-    await env.CONFIG.put("bot_config", JSON.stringify(config));
+    await env.CONFIG.put(
+      "bot_config",
+      JSON.stringify(config)
+    );
 
     return json({
       ok: true,
@@ -792,7 +824,8 @@ export default {
 
     console.log("KRYPTON_MARKETS_CRON:", cron);
 
-    if (cron === "* * * * *") {
+    // تحديث الأسعار كل 10 دقائق
+    if (cron === "*/10 * * * *") {
       ctx.waitUntil(
         publishPrices(env).catch(error => {
           console.error("PRICE_PUBLISH_FAILED:", error.message);
@@ -802,6 +835,7 @@ export default {
       return;
     }
 
+    // تحليل السوق كل ساعة
     if (cron === "0 * * * *") {
       ctx.waitUntil(
         publishHourly(env).catch(error => {
@@ -812,6 +846,7 @@ export default {
       return;
     }
 
+    // تقرير الاتجاه كل 4 ساعات
     if (cron === "0 */4 * * *") {
       ctx.waitUntil(
         publishFourHour(env).catch(error => {
