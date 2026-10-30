@@ -20,6 +20,7 @@ function json(data, status = 200) {
 
 function cors(response) {
   const h = new Headers(response.headers);
+
   h.set("access-control-allow-origin", "*");
   h.set("access-control-allow-methods", "GET, POST, OPTIONS");
   h.set("access-control-allow-headers", "Content-Type, Authorization");
@@ -130,6 +131,7 @@ function escapeHtml(s) {
 }
 
 // Binance Spot public market data
+// يحاول الاتصال بجميع النطاقات ويسجل تفاصيل كل خطأ
 async function getBinanceTickers(symbols) {
   const params = symbols.length === 1
     ? `symbol=${encodeURIComponent(symbols[0])}`
@@ -197,6 +199,8 @@ async function getBinanceTickers(symbols) {
         continue;
       }
 
+      console.log("BINANCE_CONNECTED:", base);
+
       return {
         data,
         endpoint: base
@@ -211,12 +215,14 @@ async function getBinanceTickers(symbols) {
     }
   }
 
+  console.error(
+    "BINANCE_DIAGNOSTICS:",
+    JSON.stringify(errors)
+  );
+
   const error = new Error("BINANCE_ALL_ENDPOINTS_FAILED");
 
-  error.code = errors.some(e => e.type === "BINANCE_HTTP_403")
-    ? "BINANCE_HTTP_403"
-    : "BINANCE_CONNECTION_FAILED";
-
+  error.code = "BINANCE_ALL_ENDPOINTS_FAILED";
   error.details = errors;
 
   throw error;
@@ -354,7 +360,6 @@ async function publish(env) {
           parse_mode: "HTML",
           disable_web_page_preview: true
         });
-
       } else {
         result = {
           message_id: state.message_id
@@ -393,7 +398,9 @@ async function handleRequest(request, env) {
   const url = new URL(request.url);
 
   if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204 });
+    return new Response(null, {
+      status: 204
+    });
   }
 
   if (!url.pathname.startsWith("/api/")) {
@@ -412,7 +419,10 @@ async function handleRequest(request, env) {
     }, 401);
   }
 
-  if (url.pathname === "/api/config" && request.method === "GET") {
+  if (
+    url.pathname === "/api/config" &&
+    request.method === "GET"
+  ) {
     const config = await getConfig(env);
     const state = await env.CONFIG.get("bot_state", "json");
 
@@ -423,7 +433,10 @@ async function handleRequest(request, env) {
     });
   }
 
-  if (url.pathname === "/api/config" && request.method === "POST") {
+  if (
+    url.pathname === "/api/config" &&
+    request.method === "POST"
+  ) {
     const body = await request.json();
 
     const config = {
@@ -444,12 +457,19 @@ async function handleRequest(request, env) {
     });
   }
 
-  if (url.pathname === "/api/publish" && request.method === "POST") {
+  if (
+    url.pathname === "/api/publish" &&
+    request.method === "POST"
+  ) {
     const result = await publish(env);
+
     return json(result);
   }
 
-  if (url.pathname === "/api/status" && request.method === "GET") {
+  if (
+    url.pathname === "/api/status" &&
+    request.method === "GET"
+  ) {
     const state = await env.CONFIG.get("bot_state", "json");
 
     return json({
@@ -471,12 +491,12 @@ export default {
       return cors(await handleRequest(request, env));
 
     } catch (error) {
-      console.error("Worker error:", JSON.stringify({
+      console.error("Worker error:", {
         message: error.message,
         code: error.code || null,
         details: error.details || null,
         stack: error.stack || null
-      }));
+      });
 
       return cors(json({
         ok: false,
@@ -490,16 +510,12 @@ export default {
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(
       publish(env).catch(error => {
-        console.error(
-          "SCHEDULED_PUBLISH_FAILED",
-          JSON.stringify({
-            message: error.message || String(error),
-            code: error.code || null,
-            details: error.details || null,
-            stack: error.stack || null,
-            time: new Date().toISOString()
-          })
-        );
+        console.error("Scheduled publish failed:", {
+          message: error.message,
+          code: error.code || null,
+          details: error.details || null,
+          stack: error.stack || null
+        });
       })
     );
   }
