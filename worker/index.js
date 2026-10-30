@@ -72,7 +72,7 @@ async function getBinanceTickers(symbols) {
   const params = symbols.length === 1
     ? `symbol=${encodeURIComponent(symbols[0])}`
     : `symbols=${encodeURIComponent(JSON.stringify(symbols))}`;
-  const url = `https://data-api.binance.vision/api/v3/ticker/24hr?${params}`;
+  const url = `https://api1.binance.com/api/v3/ticker/24hr?${params}`;
   const response = await fetch(url, {
     headers: { "accept": "application/json" },
     cf: { cacheTtl: 0, cacheEverything: false }
