@@ -1,14 +1,10 @@
 name = "crypto-market-bot"
 main = "worker/index.js"
-compatibility_date = "2026-10-30"
+compatibility_date = "2025-09-01"
 
-
+# كرون واحد فقط. الكود نفسه يقرر متى ينشر الأسعار / تقرير الساعة / تقرير 4 ساعات.
 [triggers]
-crons = [
-  "* * * * *",
-  "0 * * * *",
-  "0 */4 * * *"
-]
+crons = ["* * * * *"]
 
 [[kv_namespaces]]
 binding = "CONFIG"
