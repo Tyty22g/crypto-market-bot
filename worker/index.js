@@ -818,39 +818,44 @@ export default {
     }
   },
 
-  async scheduled(controller, env, ctx) {
-    const cron = controller.cron;
+  
+async scheduled(controller, env, ctx) {
+  const cron = controller.cron;
 
-    console.log("KRYPTON_MARKETS_CRON:", cron);
+  console.log("KRYPTON_MARKETS_CRON:", cron);
 
-    // تحديث الأسعار كل 10 دقائق
-    if (cron === "* * * * *") {
-      ctx.waitUntil(
-        publishPrices(env).catch(error => {
-          console.error("PRICE_PUBLISH_FAILED:", error.message);
-        })
-      );
+  // الأسعار كل 5 دقائق
+  if (cron === "*/5 * * * *") {
+    ctx.waitUntil(
+      publishPrices(env).catch(error => {
+        console.error("PRICE_PUBLISH_FAILED:", error.message);
+      })
+    );
+    return;
+  }
 
-      return;
-    }
+  // تحليل السوق كل ساعة
+  if (cron === "0 * * * *") {
+    ctx.waitUntil(
+      publishHourly(env).catch(error => {
+        console.error("HOURLY_PUBLISH_FAILED:", error.message);
+      })
+    );
+    return;
+  }
 
-    // تحليل السوق كل ساعة
-    if (cron === "0 * * * *") {
-      ctx.waitUntil(
-        publishHourly(env).catch(error => {
-          console.error("HOURLY_PUBLISH_FAILED:", error.message);
-        })
-      );
+  // تقرير السوق كل 4 ساعات
+  if (cron === "0 */4 * * *") {
+    ctx.waitUntil(
+      publishFourHour(env).catch(error => {
+        console.error("FOUR_HOUR_PUBLISH_FAILED:", error.message);
+      })
+    );
+    return;
+  }
 
-      return;
-    }
-
-    // تقرير الاتجاه كل 4 ساعات
-    if (cron === "0 */4 * * *") {
-      ctx.waitUntil(
-        publishFourHour(env).catch(error => {
-          console.error("FOUR_HOUR_PUBLISH_FAILED:", error.message);
-        })
+  console.log("UNKNOWN_CRON_SCHEDULE:", cron);
+})
       );
     }
   }
