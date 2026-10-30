@@ -131,7 +131,6 @@ function escapeHtml(s) {
 }
 
 // Binance Spot public market data
-// يحاول الاتصال بجميع النطاقات ويسجل تفاصيل كل خطأ
 async function getBinanceTickers(symbols) {
   const params = symbols.length === 1
     ? `symbol=${encodeURIComponent(symbols[0])}`
@@ -327,6 +326,7 @@ async function telegramCall(env, method, payload) {
   return result.result;
 }
 
+// ينشر رسالة جديدة دائماً ولا يعدّل المنشورات السابقة
 async function publish(env) {
   checkKV(env);
 
@@ -336,46 +336,14 @@ async function publish(env) {
 
   const text = buildMessage(config, market.data);
 
-  const state = await env.CONFIG.get("bot_state", "json");
+  const result = await telegramCall(env, "sendMessage", {
+    chat_id: env.TELEGRAM_CHAT_ID,
+    text,
+    parse_mode: "HTML",
+    disable_web_page_preview: true
+  });
 
-  let result;
-
-  if (state && state.message_id) {
-    try {
-      result = await telegramCall(env, "editMessageText", {
-        chat_id: env.TELEGRAM_CHAT_ID,
-        message_id: state.message_id,
-        text,
-        parse_mode: "HTML",
-        disable_web_page_preview: true
-      });
-
-    } catch (error) {
-      if (
-        !String(error.message).includes("message is not modified")
-      ) {
-        result = await telegramCall(env, "sendMessage", {
-          chat_id: env.TELEGRAM_CHAT_ID,
-          text,
-          parse_mode: "HTML",
-          disable_web_page_preview: true
-        });
-      } else {
-        result = {
-          message_id: state.message_id
-        };
-      }
-    }
-
-  } else {
-    result = await telegramCall(env, "sendMessage", {
-      chat_id: env.TELEGRAM_CHAT_ID,
-      text,
-      parse_mode: "HTML",
-      disable_web_page_preview: true
-    });
-  }
-
+  // حفظ بيانات آخر منشور فقط للمتابعة
   await env.CONFIG.put(
     "bot_state",
     JSON.stringify({
@@ -385,12 +353,15 @@ async function publish(env) {
     })
   );
 
+  console.log("TELEGRAM_NEW_MESSAGE_PUBLISHED:", result.message_id);
+
   return {
     ok: true,
     message_id: result.message_id,
     updated_at: new Date().toISOString(),
     count: config.symbols.length,
-    binance_endpoint: market.endpoint
+    binance_endpoint: market.endpoint,
+    publish_mode: "NEW_MESSAGE"
   };
 }
 
@@ -407,7 +378,8 @@ async function handleRequest(request, env) {
     return json({
       ok: true,
       service: "Crypto Market Bot",
-      message: "Worker is running"
+      message: "Worker is running",
+      publish_mode: "NEW_MESSAGE"
     });
   }
 
