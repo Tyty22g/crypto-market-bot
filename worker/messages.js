@@ -13,8 +13,32 @@ export function channelButton(ch) {
 }
 
 const SEP = "━━━━━━━━━━━━━━━━━━";
-const footer = (ch, now) =>
-  `${SEP}\n🕒 ${formatTime(now, ch.tzOffset)}\n📡 Source: Binance Spot`;
+const footer = (ch, now, src = "Binance Spot") =>
+  `${SEP}\n🕒 ${formatTime(now, ch.tzOffset)}\n📡 Source: ${src}`;
+
+function plainPrice(x) {
+  const s = String(x).trim();
+  if (/^\d+\.\d+$/.test(s)) return s.replace(/0+$/, "").replace(/\.$/, "");
+  if (/^\d+$/.test(s)) return s;
+  const n = Number(s);
+  return Number.isFinite(n) ? n.toFixed(8).replace(/\.?0+$/, "") : s;
+}
+
+// قناة سعر فقط: رسالة قصيرة لكل عملة مثل $5677.77666
+export function buildPriceOnly(ch, map) {
+  const tpl = escapeHtml(ch.priceTemplate || "${price}");
+  const out = [];
+  for (const s of ch.symbols) {
+    const t = map.get(s);
+    if (!t) continue;
+    out.push(tpl
+      .replaceAll("{price}", plainPrice(t.lastPriceRaw ?? t.lastPrice))
+      .replaceAll("{symbol}", coinName(s))
+      .replaceAll("{change}", signed(t.priceChangePercent, "%")));
+  }
+  if (!out.length) throw new Error("NO_PRICE_DATA");
+  return out;
+}
 
 // ---------- الأسعار ----------
 
@@ -36,7 +60,8 @@ function priceRows(ch, map) {
       row += `\n24H High: $${fmt(t.highPrice)} | Low: $${fmt(t.lowPrice)}`;
     }
     if (ch.showVolume) {
-      row += `\n24H Volume: $${fmt(t.quoteVolume, 7)}\nTrades: ${fmt(t.count, 0)}`;
+      row += `\n24H Volume: $${fmt(t.quoteVolume, 7)}`;
+      if (Number.isFinite(Number(t.count))) row += `\nTrades: ${fmt(t.count, 0)}`;
     }
     rows.push(row);
   }
@@ -50,7 +75,7 @@ export function buildPriceMessages(ch, map, now) {
   if (!rows.length) throw new Error("NO_PRICE_DATA");
 
   const rowSep = `\n\n${SEP}\n\n`;
-  const foot = `\n\n${footer(ch, now)}`;
+  const foot = `\n\n${footer(ch, now, map.sourceName)}`;
   const head = (i, n) =>
     `📊 <b>${escapeHtml(ch.title)}</b>\n` +
     `<b>LIVE CRYPTO MARKET UPDATE${n > 1 ? ` (${i}/${n})` : ""}</b>\n${SEP}\n\n`;

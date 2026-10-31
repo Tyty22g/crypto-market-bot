@@ -1,5 +1,6 @@
 import { uid } from "./util.js";
 import { DEFAULT_ENDPOINTS } from "./binance.js";
+import { PROVIDER_IDS, defaultProviderSettings } from "./providers.js";
 
 export const JOBS = ["price", "hourly", "four_hour", "daily", "weekly"];
 export const MAX_CHANNELS = 20;
@@ -26,6 +27,9 @@ export function newChannel(over = {}) {
     showHighLow: true,
     showVolume: true,
     technicals: false,
+    provider: "auto",
+    format: "full",
+    priceTemplate: "${price}",
     jobs: {
       price: { enabled: true, everyMinutes: 5 },
       hourly: { enabled: true },
@@ -117,6 +121,12 @@ function sanitizeChannel(c, old) {
     showHighLow: c.showHighLow !== false,
     showVolume: c.showVolume !== false,
     technicals: Boolean(c.technicals),
+    provider: PROVIDER_IDS.includes(c.provider) ? c.provider : "auto",
+    format: c.format === "price_only" ? "price_only" : "full",
+    priceTemplate: (() => {
+      const t = String(c.priceTemplate ?? "${price}").slice(0, 60);
+      return t.includes("{price}") ? t : "${price}";
+    })(),
     jobs: {
       price: { enabled: j.price?.enabled !== false, everyMinutes: int(j.price?.everyMinutes, 1, 1440, 5) },
       hourly: { enabled: j.hourly?.enabled !== false },
@@ -143,7 +153,8 @@ function sanitizeChannel(c, old) {
 export function defaultSettings() {
   return {
     endpoints: DEFAULT_ENDPOINTS.map(url => ({ url, enabled: true })),
-    timeoutMs: 6000
+    timeoutMs: 6000,
+    ...(() => { const d = defaultProviderSettings(); return { providers: d.providers, providerOrder: d.order, failover: true }; })()
   };
 }
 
@@ -169,7 +180,28 @@ export function sanitizeSettings(input, existing) {
 
   if (!endpoints.some(e => e.enabled)) throw new Error("لازم رابط واحد فعّال على الأقل");
 
-  return { endpoints, timeoutMs: int(input.timeoutMs, 2000, 30000, 6000) };
+  // المنصات الأخرى
+  const dp = defaultProviderSettings();
+  const inP = input.providers || base.providers || dp.providers;
+  const providers = {};
+  for (const id of PROVIDER_IDS) {
+    const v = inP[id] || dp.providers[id];
+    let b = String(v.base ?? dp.providers[id].base ?? "").trim().replace(/\/+$/, "");
+    if (id !== "binance") {
+      if (!/^https:\/\/[A-Za-z0-9.-]+(:\d{2,5})?$/.test(b)) throw new Error(`رابط ${id} غير صالح (https://domain فقط)`);
+    } else b = null;
+    providers[id] = { enabled: v.enabled !== false, base: b };
+  }
+  if (!Object.values(providers).some(p => p.enabled)) throw new Error("لازم منصة واحدة فعّالة على الأقل");
+
+  let order = Array.isArray(input.providerOrder) ? input.providerOrder.filter(id => PROVIDER_IDS.includes(id)) : (base.providerOrder || dp.order);
+  order = [...new Set([...order, ...PROVIDER_IDS])];
+
+  return {
+    endpoints, timeoutMs: int(input.timeoutMs, 2000, 30000, 6000),
+    providers, providerOrder: order,
+    failover: input.failover === undefined ? base.failover !== false : input.failover !== false
+  };
 }
 
 export function sanitizeConfig(input, existing) {

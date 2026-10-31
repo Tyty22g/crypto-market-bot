@@ -1,9 +1,12 @@
 import { json, sleep, slotStart } from "./util.js";
+
+export const BOT_VERSION = "3.2.0";
 import { JOBS, sanitizeConfig, buildInitialConfig, defaultSettings } from "./config.js";
-import { fetchDataset, priceMap, getCloses, rsi, sma, applyBinanceSettings, binanceState, diagnoseEndpoints } from "./binance.js";
+import { getCloses, rsi, sma, applyBinanceSettings, binanceState, diagnoseEndpoints } from "./binance.js";
+import { fetchData, priceMapAny, testProvider, applyProviderSettings, defaultProviderSettings, PROVIDERS } from "./providers.js";
 import { sendMessage, sendPlain, telegramCall } from "./telegram.js";
 import {
-  buildPriceMessages, buildReport, windowItem, REPORTS,
+  buildPriceMessages, buildPriceOnly, buildReport, windowItem, REPORTS,
   buildMoveAlert, buildLevelAlert, coinName
 } from "./messages.js";
 import { escapeHtml } from "./util.js";
@@ -29,7 +32,7 @@ export function jobDefs(ch) {
       // الأسبوع يبدأ من الخميس (1970-01-01)، لذلك نحسب أيام الإزاحة منه
       anchor: ((j.weekly.day - 4 + 7) % 7) * DAY + j.weekly.hour * HR,
       grace: 120 * MIN, data: "7d" }
-  ].map(d => ({ ...d, tz }));
+  ].filter(d => ch.format !== "price_only" || d.job === "price").map(d => ({ ...d, tz }));
 }
 
 export class Engine {
@@ -42,6 +45,7 @@ export class Engine {
     this.notifyAt = new Map();
     this.authFails = new Map();
     this.dirtyState = false;
+    this.degraded = false;
     this.forceFlush = false;
     this.flushedAt = 0;
   }
@@ -62,6 +66,10 @@ export class Engine {
       await env.CONFIG.put("bot_config_v3", JSON.stringify(cfg));
     }
     if (!cfg.settings) cfg.settings = defaultSettings();
+    if (!cfg.settings.providers) {
+      const d = defaultProviderSettings();
+      Object.assign(cfg.settings, { providers: d.providers, providerOrder: d.order, failover: true });
+    }
 
     this.s.config = cfg;
     this.s.secrets = (await env.CONFIG.get("bot_secrets", "json")) || {};
@@ -72,7 +80,9 @@ export class Engine {
     }
 
     applyBinanceSettings(cfg.settings);
+    applyProviderSettings(cfg.settings);
     this.loadedAt = Date.now();
+    if (first) await this.checkVersion();
   }
 
   async handle(env, path, body = {}) {
@@ -120,7 +130,10 @@ export class Engine {
       case "config": {
         this.s.config = sanitizeConfig(body.config, this.s.config);
         applyBinanceSettings(this.s.config.settings);
+        applyProviderSettings(this.s.config.settings);
         await this.persist("config");
+        const cs = this.s.config.channels;
+        await this.adminNote("cfg", `⚙️ <b>Settings updated</b> from the dashboard\nChannels: ${cs.length} (${cs.filter(c => c.enabled).length} active)`, 1);
         // تنظيف حالة الجدولة للقنوات المحذوفة
         const ids = new Set(this.s.config.channels.map(c => c.id));
         for (const k of Object.keys(this.s.slots)) {
@@ -137,6 +150,7 @@ export class Engine {
       }
 
       case "secret": return this.saveToken(body.telegramToken);
+      case "ptest": return testProvider(String(body.id || ""));
 
       case "publish": return this.publishNow(body.channelId, body.job);
       case "preview": return this.previewNow(body.channelId, body.job);
@@ -265,14 +279,18 @@ export class Engine {
     // طلب واحد لكل نوع بيانات لكل القنوات
     const symbolsByType = new Map();
     for (const d of due) {
-      if (!symbolsByType.has(d.def.data)) symbolsByType.set(d.def.data, new Set());
-      d.ch.symbols.forEach(s => symbolsByType.get(d.def.data).add(s));
+      const key = this.dsKey(d);
+      if (!symbolsByType.has(key)) symbolsByType.set(key, new Set());
+      d.ch.symbols.forEach(s => symbolsByType.get(key).add(s));
     }
 
     const datasets = {};
-    await Promise.all([...symbolsByType].map(async ([type, set]) => {
-      try { datasets[type] = await this.withRetry(() => fetchDataset(type, [...set])); }
-      catch (error) { datasets[type] = { error }; }
+    await Promise.all([...symbolsByType].map(async ([key, set]) => {
+      const [type, prefer] = key.split("|");
+      try {
+        datasets[key] = await this.withRetry(() => fetchData(type, [...set], prefer));
+        await this.noteSources(datasets[key]);
+      } catch (error) { datasets[key] = { error }; }
     }));
 
     const techCache = new Map();
@@ -280,7 +298,7 @@ export class Engine {
     for (const d of due) {
       const t0 = Date.now();
       try {
-        const ds = datasets[d.def.data];
+        const ds = datasets[this.dsKey(d)];
         if (ds.error) throw ds.error;
 
         const r = await this.runOne(d.ch, d.def.job, ds, now, techCache, false);
@@ -302,7 +320,7 @@ export class Engine {
     let messages;
 
     if (job === "price") {
-      messages = buildPriceMessages(ch, map, now);
+      messages = ch.format === "price_only" ? buildPriceOnly(ch, map) : buildPriceMessages(ch, map, now);
     } else {
       const items = ch.symbols.map(s => windowItem(s, map.get(s)));
       if (!items.some(x => x.available)) throw new Error("NO_DATA");
@@ -359,18 +377,49 @@ export class Engine {
     if (ok) (this.s.last[ch.id] ||= {})[job] = { t: now, id };
   }
 
-  async notifyAdmin(ch, job, message) {
-    const chat = this.s.config.adminChatId;
-    if (!chat) return;
+  dsKey(d) {
+    return `${d.def.data}|${d.def.data === "24hr" ? (d.ch.provider || "auto") : "x"}`;
+  }
 
-    const key = `${ch.id}:${job}`;
-    if (Date.now() - (this.notifyAt.get(key) || 0) < 30 * MIN) return;
+  // رسالة للأدمن بالإنجليزي (مع تحديد تكرار لكل نوع)
+  async adminNote(key, html, cooldownMin = 30) {
+    const chat = this.s.config?.adminChatId;
+    if (!chat) return false;
+    if (Date.now() - (this.notifyAt.get(key) || 0) < cooldownMin * MIN) return false;
     this.notifyAt.set(key, Date.now());
+    try { await sendPlain(this.tgEnv(), chat, html); return true; } catch { return false; }
+  }
 
+  async notifyAdmin(ch, job, message) {
+    await this.adminNote(`${ch.id}:${job}`,
+      `⚠️ <b>Publish failed</b>\nChannel: ${escapeHtml(ch.name)}\nJob: ${job}\nError: ${escapeHtml(message)}`, 30);
+  }
+
+  async noteSources(map) {
+    if (!map || !map.providers) return;
+    const bad = (map.failed || []).filter(f => !f.soft);
+    if (bad.length) {
+      this.degraded = true;
+      await this.adminNote("failover",
+        `🔀 <b>Exchange failover</b>\nUnreachable: ${bad.map(f => `${f.id} (${escapeHtml(f.error)})`).join(", ")}\nNow using: ${escapeHtml(map.sourceName)}`, 60);
+    } else if (this.degraded) {
+      this.degraded = false;
+      await this.adminNote("recovered", `✅ <b>Exchanges recovered</b>\nSource: ${escapeHtml(map.sourceName)}`, 5);
+    }
+  }
+
+  // أول تشغيل بعد نشر نسخة جديدة: يرسل إشعار للأدمن
+  async checkVersion() {
     try {
-      await sendPlain(this.tgEnv(), chat,
-        `⚠️ <b>فشل النشر</b>\nالقناة: ${escapeHtml(ch.name)}\nالنوع: ${job}\nالخطأ: ${escapeHtml(message)}`);
-    } catch { /* تجاهل */ }
+      const chat = this.s.config.adminChatId;
+      if (!chat) return;
+      const meta = (await this.env.CONFIG.get("bot_meta", "json")) || {};
+      if (meta.version === BOT_VERSION) return;
+      const sent = await this.adminNote("version", meta.version
+        ? `🆕 <b>Bot updated</b>\nv${escapeHtml(meta.version)} → v${BOT_VERSION}`
+        : `✅ <b>Bot started</b>\nVersion v${BOT_VERSION}`, 0);
+      if (sent) await this.env.CONFIG.put("bot_meta", JSON.stringify({ version: BOT_VERSION, at: Date.now() }));
+    } catch (e) { console.warn("VERSION_CHECK_FAILED:", e.message); }
   }
 
   // ---------- أوامر يدوية من اللوحة ----------
@@ -384,7 +433,7 @@ export class Engine {
   async manualData(ch, job) {
     if (!JOBS.includes(job)) throw new Error("نوع منشور غير معروف");
     const def = jobDefs(ch).find(d => d.job === job);
-    return this.withRetry(() => fetchDataset(def.data, ch.symbols));
+    return this.withRetry(() => fetchData(def.data, ch.symbols, ch.provider));
   }
 
   async publishNow(channelId, job) {
@@ -444,7 +493,7 @@ export class Engine {
       c.alerts.levels.filter(l => !l.triggered).forEach(l => symbols.add(l.symbol));
     }
 
-    const prices = await this.withRetry(() => priceMap([...symbols]));
+    const prices = await this.withRetry(() => priceMapAny([...symbols]));
 
     // سجل الأسعار (للمقارنة خلال آخر N دقيقة)
     const keepFrom = now - (maxMinutes + 3) * MIN;
