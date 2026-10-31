@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-let cfg = null, status = null, logs = [], dirty = false;
+let cfg = null, status = null, logs = [], secrets = null, dirty = false;
 const openIds = new Set();
 let timer = null;
 
@@ -44,7 +44,7 @@ async function connect() {
     localStorage.removeItem("cmb_url"); localStorage.removeItem("cmb_key");
     sessionStorage.removeItem("cmb_url"); sessionStorage.removeItem("cmb_key");
     store().setItem("cmb_url", base()); store().setItem("cmb_key", $("adminKey").value.trim());
-    cfg = d.config; status = d.status; logs = d.logs; dirty = false;
+    cfg = d.config; status = d.status; logs = d.logs; secrets = d.secrets; dirty = false;
     $("login").hidden = true; $("app").hidden = false;
     renderAll();
     notice("تم الاتصال.");
@@ -55,7 +55,7 @@ async function connect() {
 
 async function refreshStatus() {
   if (!cfg || document.hidden || $("tab-status").hidden) return;
-  try { const d = await api("/api/state"); status = d.status; logs = d.logs; renderStatus(); } catch { /* تجاهل */ }
+  try { const d = await api("/api/state"); status = d.status; logs = d.logs; secrets = d.secrets; renderStatus(); } catch { /* تجاهل */ }
 }
 
 // ---------- أدوات ----------
@@ -77,7 +77,8 @@ function hint(err) {
   if (!err) return "";
   if (/chat not found/i.test(err)) return " — الـ chat id غلط أو البوت مو مضاف للقناة";
   if (/not enough rights|forbidden|can't post|kicked/i.test(err)) return " — البوت لازم يكون أدمن بصلاحية النشر";
-  if (/BINANCE/i.test(err)) return " — تعذر الاتصال بـ Binance، يعيد المحاولة تلقائياً";
+  if (/BINANCE.*(451|403)/i.test(err)) return " — Binance تحجب منطقة السيرفر. أضف رابط وسيط من تبويب الاتصال";
+  if (/BINANCE/i.test(err)) return " — تعذر الاتصال بـ Binance. افحص الروابط من تبويب الاتصال";
   if (/NO_DATA|NO_PRICE/i.test(err)) return " — ما وصلت بيانات للأزواج";
   return "";
 }
@@ -203,7 +204,15 @@ function renderStatus() {
   else if (s.lastTickAt && Date.now() - s.lastTickAt < 150000) sys = `<b class="okc">✅ الجدولة شغالة</b> · آخر دورة ${ago(s.lastTickAt)}`;
   else if (s.nextAlarm) sys = `<b>🟡 الجدولة بانتظار الدورة القادمة</b> · ${inn(s.nextAlarm)}`;
   else sys = `<b class="err">⚠️ ما أكو منبّه مجدول</b> · الكرون يرجّعه خلال دقيقة`;
-  $("sysline").innerHTML = sys;
+  const b = s.binance || {};
+  let bl = "";
+  if (b.lastOkAt && (!b.lastFailAt || b.lastOkAt >= b.lastFailAt)) {
+    bl = `<div class="muted" dir="ltr" style="text-align:left">Binance ✅ ${ago(b.lastOkAt)} · ${esc(b.lastOkBase)}</div>`;
+  } else if (b.lastFailAt) {
+    bl = `<div class="err" dir="ltr" style="text-align:left">Binance ❌ ${ago(b.lastFailAt)} · ${esc(b.lastFail)}</div>` +
+         `<div class="muted">افحص الروابط من تبويب «الاتصال»</div>`;
+  }
+  $("sysline").innerHTML = sys + bl;
 
   $("statusChannels").innerHTML = s.channels.map(c => `
     <div class="panel"><h2>${esc(c.name)} <span class="badge ${c.enabled ? "ok" : "off"}">${c.enabled ? "فعّالة" : "معطلة"}</span></h2>
@@ -219,7 +228,24 @@ function renderStatus() {
         ${l.ok ? `<span class="muted"> #${l.id}</span>` : `<div class="err" dir="ltr" style="text-align:left">${esc(l.err)}${l.n > 1 ? ` ×${l.n}` : ""}</div><div class="muted">${esc(hint(l.err))}</div>`}</span>
       <span class="muted">${ago(l.t)}</span></div>`).join("") || `<p class="muted">لسه ما أكو عمليات.</p>`;
 }
-function renderAll() { renderChannels(); renderGeneral(); renderStatus(); clean(); }
+function renderConnection() {
+  const eps = cfg.settings.endpoints;
+  $("endpoints").innerHTML = eps.map((e, i) => `
+    <div class="ep">
+      <input type="checkbox" data-ep="toggle" data-i="${i}" ${e.enabled ? "checked" : ""}>
+      <span class="url ${e.enabled ? "" : "off"}">${esc(e.url)}</span>
+      <button class="secondary" data-ep="up" data-i="${i}" ${i === 0 ? "disabled" : ""}>↑</button>
+      <button class="secondary" data-ep="down" data-i="${i}" ${i === eps.length - 1 ? "disabled" : ""}>↓</button>
+      <button class="danger" data-ep="del" data-i="${i}">✕</button>
+    </div>`).join("");
+  $("timeoutMs").value = cfg.settings.timeoutMs;
+
+  const t = secrets || { source: "none" };
+  $("tokenState").innerHTML = t.source === "dashboard"
+    ? `التوكن الحالي: <b dir="ltr">${esc(t.masked)}</b> (محفوظ من اللوحة)`
+    : t.source === "env" ? "يُستعمل التوكن من Cloudflare Secrets." : `<span class="err">ما أكو توكن مضبوط.</span>`;
+}
+function renderAll() { renderChannels(); renderConnection(); renderGeneral(); renderStatus(); clean(); }
 
 // ---------- أحداث ----------
 function onField(e) {
@@ -244,7 +270,7 @@ document.querySelector(".tabs").addEventListener("click", e => {
   const b = e.target.closest("button[data-tab]");
   if (!b) return;
   document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
-  ["status", "channels", "general"].forEach(t => { $("tab-" + t).hidden = t !== b.dataset.tab; });
+  ["status", "channels", "connection", "general"].forEach(t => { $("tab-" + t).hidden = t !== b.dataset.tab; });
   if (b.dataset.tab === "status") refreshStatus();
 });
 
@@ -263,7 +289,7 @@ async function saveConfig() {
     const d = await api("/api/config", "POST", { config: cfg });
     cfg = d.config;
     renderAll();
-    const s = await api("/api/state"); status = s.status; logs = s.logs; renderStatus();
+    const s = await api("/api/state"); status = s.status; logs = s.logs; secrets = s.secrets; renderStatus();
     notice("تم الحفظ. التغييرات تطبق من الدقيقة القادمة.");
     return true;
   } catch (e) { notice(e.message, "err"); return false; }
@@ -329,6 +355,77 @@ $("saveBtn").addEventListener("click", async () => { $("saveBtn").disabled = tru
 $("connectBtn").addEventListener("click", connect);
 $("modalClose").addEventListener("click", () => { $("modal").hidden = true; });
 window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+// ---------- الاتصال ----------
+$("endpoints").addEventListener("click", e => {
+  const b = e.target.closest("button[data-ep]");
+  if (!b) return;
+  const i = Number(b.dataset.i), eps = cfg.settings.endpoints;
+  if (b.dataset.ep === "del") eps.splice(i, 1);
+  else if (b.dataset.ep === "up" && i > 0) [eps[i - 1], eps[i]] = [eps[i], eps[i - 1]];
+  else if (b.dataset.ep === "down" && i < eps.length - 1) [eps[i + 1], eps[i]] = [eps[i], eps[i + 1]];
+  markDirty(); renderConnection();
+});
+$("endpoints").addEventListener("change", e => {
+  const el = e.target.closest("input[data-ep=toggle]");
+  if (!el) return;
+  cfg.settings.endpoints[Number(el.dataset.i)].enabled = el.checked;
+  markDirty(); renderConnection();
+});
+$("addEndpoint").addEventListener("click", () => {
+  const v = $("newEndpoint").value.trim().replace(/\/+$/, "");
+  if (!/^https:\/\/\S+$/.test(v)) return notice("الرابط لازم يبدأ بـ https://", "err");
+  if (cfg.settings.endpoints.some(x => x.url === v)) return notice("الرابط موجود.", "err");
+  cfg.settings.endpoints.unshift({ url: v, enabled: true });
+  $("newEndpoint").value = "";
+  markDirty(); renderConnection();
+});
+$("timeoutMs").addEventListener("input", () => { cfg.settings.timeoutMs = Number($("timeoutMs").value); markDirty(); });
+$("defaultsBtn").addEventListener("click", () => {
+  if (!confirm("استرجاع قائمة الروابط الافتراضية؟")) return;
+  cfg.settings.endpoints = ["https://data-api.binance.vision", "https://api.binance.com", "https://api-gcp.binance.com",
+    "https://api1.binance.com", "https://api2.binance.com", "https://api3.binance.com", "https://api4.binance.com"]
+    .map(url => ({ url, enabled: true }));
+  markDirty(); renderConnection();
+});
+$("diagBtn").addEventListener("click", async () => {
+  const b = $("diagBtn"); b.disabled = true; b.textContent = "جاري الفحص...";
+  try {
+    // الفحص على الروابط المحفوظة: نحفظ أول إذا في تغييرات
+    if (dirty && !(await saveConfig())) return;
+    const d = await api("/api/diagnose", "POST", {});
+    const okAny = d.results.some(r => r.ok);
+    const geo = d.results.some(r => r.status === 451 || r.status === 403);
+    $("diagOut").innerHTML = `<div class="diag">` + d.results.map(r => `
+      <div class="row"><span>${r.ok ? "✅" : "❌"}</span>
+        <span class="u">${esc(r.url)}</span>
+        <span class="${r.ok ? "okc" : "err"}" dir="ltr">${r.ok ? "OK" : esc(r.error || "HTTP " + r.status)}</span>
+        <span class="muted">${r.ms}ms</span></div>`).join("") +
+      (okAny ? `<p class="okc">فيه رابط شغال. البوت راح يستعمله تلقائياً.</p>`
+        : geo ? `<p class="err">كل الروابط محجوبة (451/403): Binance تحجب منطقة سيرفر Cloudflare. أضف رابط وسيط (Proxy) بالأعلى.</p>`
+        : `<p class="err">ما اتصل ولا رابط. جرب تعيد الفحص بعد دقائق أو زيد المهلة.</p>`) + `</div>`;
+  } catch (e) { notice(e.message, "err"); }
+  finally { b.disabled = false; b.textContent = "فحص كل الروابط"; }
+});
+
+$("tokenSave").addEventListener("click", async () => {
+  const v = $("tokenInput").value.trim();
+  if (!v) return notice("الصق التوكن أولاً.", "err");
+  $("tokenSave").disabled = true;
+  try {
+    const d = await api("/api/secret", "POST", { telegramToken: v });
+    secrets = d.secrets; $("tokenInput").value = ""; renderConnection();
+    notice(`تم التحقق والحفظ${d.bot ? " (@" + d.bot + ")" : ""}.`);
+  } catch (e) { notice(e.message, "err"); }
+  finally { $("tokenSave").disabled = false; }
+});
+$("tokenClear").addEventListener("click", async () => {
+  if (!confirm("حذف التوكن المحفوظ من اللوحة؟ (يرجع لتوكن Cloudflare إن وجد)")) return;
+  try {
+    const d = await api("/api/secret", "POST", { telegramToken: "" });
+    secrets = d.secrets; renderConnection(); notice("تم الحذف.");
+  } catch (e) { notice(e.message, "err"); }
+});
 
 loadCreds();
 if ($("workerUrl").value && $("adminKey").value) connect();

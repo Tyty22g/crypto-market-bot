@@ -50,3 +50,12 @@ footer{text-align:center;color:#718198;font-size:11px;padding:16px 0}
 .sheet{background:#121d2e;border:1px solid #34445d;border-radius:16px;padding:16px;max-width:520px;width:100%;max-height:85vh;overflow:auto}
 .sheet pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:13px;direction:ltr;text-align:left;margin:0}
 @media(max-width:520px){.grid2{grid-template-columns:1fr}}
+
+.ep{display:flex;align-items:center;gap:6px;padding:7px 0;border-bottom:1px solid #1d2b40;font-size:13px}
+.ep:last-child{border-bottom:0}
+.ep .url{flex:1;min-width:0;direction:ltr;text-align:left;word-break:break-all}
+.ep .url.off{opacity:.45;text-decoration:line-through}
+.ep button{padding:4px 8px;font-size:12px}
+.ep input[type=checkbox]{accent-color:#e8b90b;width:17px;height:17px;flex:none}
+.diag{margin-top:12px;border-top:1px solid #26354b;padding-top:8px}
+.diag .row .u{direction:ltr;text-align:left;flex:1;min-width:150px;word-break:break-all}

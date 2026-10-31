@@ -30,6 +30,7 @@
     <nav class="tabs">
       <button data-tab="status" class="on">الحالة</button>
       <button data-tab="channels">القنوات</button>
+      <button data-tab="connection">الاتصال</button>
       <button data-tab="general">عام</button>
     </nav>
 
@@ -42,6 +43,37 @@
     <section id="tab-channels" hidden>
       <div id="channels"></div>
       <button id="addChannel" class="secondary wide">+ إضافة قناة جديدة</button>
+    </section>
+
+    <section id="tab-connection" hidden>
+      <div class="panel">
+        <h2>روابط Binance</h2>
+        <p class="hint" style="margin:0 0 8px">البوت يجرب الروابط بالترتيب، وإذا نجح رابط يبدأ به المرة الجاية. إذا كل الروابط تفشل بـ HTTP 451 أو 403 فهذا حظر منطقة، وحله رابط وسيط (Proxy) تضيفه هنا.</p>
+        <div id="endpoints"></div>
+        <div class="actions">
+          <input id="newEndpoint" dir="ltr" placeholder="https://my-proxy.example.com" style="flex:1;min-width:200px">
+          <button id="addEndpoint" class="secondary small">+ إضافة</button>
+        </div>
+        <label>مهلة كل رابط (ملّي ثانية)</label>
+        <input id="timeoutMs" type="number" min="2000" max="30000" step="500" dir="ltr">
+        <div class="actions">
+          <button id="diagBtn">فحص كل الروابط</button>
+          <button id="defaultsBtn" class="secondary">استرجاع الروابط الافتراضية</button>
+        </div>
+        <div id="diagOut"></div>
+      </div>
+
+      <div class="panel">
+        <h2>توكن بوت تيليغرام</h2>
+        <div id="tokenState" class="muted"></div>
+        <label>توكن جديد (من BotFather)</label>
+        <input id="tokenInput" type="password" dir="ltr" placeholder="123456789:AA..." autocomplete="off">
+        <div class="actions">
+          <button id="tokenSave">تحقق وحفظ</button>
+          <button id="tokenClear" class="danger">حذف التوكن المحفوظ</button>
+        </div>
+        <p class="hint">يُحفظ داخل الـ Worker نفسه ولا يرجع للوحة أبداً (يظهر مخفي). إذا ما حفظت شي هنا يُستعمل TELEGRAM_BOT_TOKEN من Cloudflare.</p>
+      </div>
     </section>
 
     <section id="tab-general" hidden>
