@@ -34,10 +34,13 @@ export function buildPriceOnly(ch, map) {
   for (const s of ch.symbols) {
     const t = map.get(s);
     if (!t) continue;
+    const pct = Number(t.priceChangePercent);
+    const arrow = pct > 0 ? "🟢▲" : pct < 0 ? "🔴▼" : "⚪";
     out.push(tpl
+      .replaceAll("{arrow}", arrow)
       .replaceAll("{price}", plainPrice(t.lastPriceRaw ?? t.lastPrice))
       .replaceAll("{symbol}", coinName(s))
-      .replaceAll("{change}", signed(t.priceChangePercent, "%")));
+      .replaceAll("{change}", signed(Math.round(pct * 100) / 100, "%")));
   }
   if (!out.length) throw new Error("NO_PRICE_DATA");
   return out;
