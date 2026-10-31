@@ -8,65 +8,65 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main class="wrap">
-    <header class="top">
-      <div class="mark">₿</div>
-      <div>
-        <h1>CRYPTO MARKET</h1>
-        <p>لوحة إدارة بوت أسعار العملات الرقمية</p>
-      </div>
-        <span class="live">BINANCE SPOT</span>
-    </header>
+<main class="wrap">
+  <header class="top">
+    <div class="mark">₿</div>
+    <div><h1>CRYPTO MARKET</h1><p>لوحة إدارة القنوات والمنشورات</p></div>
+    <span class="live">BINANCE SPOT</span>
+  </header>
 
-    <section class="panel">
-      <h2>الاتصال بالبوت</h2>
-      <label>رابط Cloudflare Worker</label>
-      <input id="workerUrl" placeholder="https://crypto-market-bot.اسمك.workers.dev" dir="ltr">
-      <label>مفتاح لوحة التحكم ADMIN_KEY</label>
-      <input id="adminKey" type="password" placeholder="أدخل المفتاح الذي أعددته في Cloudflare" dir="ltr">
-      <button id="loadBtn" class="secondary">تحميل الإعدادات الحالية</button>
-      <p class="hint">لا تضع Telegram Bot Token هنا. التوكن يبقى محفوظاً داخل Cloudflare Secrets فقط.</p>
+  <section id="login" class="panel">
+    <h2>الاتصال بالبوت</h2>
+    <label>رابط Cloudflare Worker</label>
+    <input id="workerUrl" placeholder="https://crypto-market-bot.اسمك.workers.dev" dir="ltr">
+    <label>مفتاح لوحة التحكم ADMIN_KEY</label>
+    <input id="adminKey" type="password" dir="ltr" placeholder="ADMIN_KEY">
+    <label class="check"><input id="remember" type="checkbox" checked> تذكّر على هذا الجهاز</label>
+    <div class="actions"><button id="connectBtn">دخول</button></div>
+    <p class="hint">لا تضع Telegram Bot Token هنا. التوكن يبقى بـ Cloudflare Secrets فقط.</p>
+  </section>
+
+  <div id="app" hidden>
+    <nav class="tabs">
+      <button data-tab="status" class="on">الحالة</button>
+      <button data-tab="channels">القنوات</button>
+      <button data-tab="general">عام</button>
+    </nav>
+
+    <section id="tab-status">
+      <div id="sysline" class="panel"></div>
+      <div id="statusChannels"></div>
+      <div class="panel"><h2>آخر العمليات</h2><div id="logs"></div></div>
     </section>
 
-    <section class="panel">
-      <h2>إعدادات المنشور</h2>
-      <label>عنوان المنشور</label>
-      <input id="title" value="CRYPTO MARKET" maxlength="50">
-      <label>أزواج Binance Spot مقابل USDT</label>
-      <textarea id="symbols" rows="9" dir="ltr" spellcheck="false">BTCUSDT
-ETHUSDT
-BNBUSDT
-SOLUSDT
-XRPUSDT</textarea>
-      <p class="hint">اكتب كل زوج بسطر، مثال BTCUSDT. يجب أن يكون الزوج متاحاً في Binance Spot ومقابلاً لـ USDT.</p>
-      <label>كل كم دقيقة ينشر الأسعار</label>
-      <select id="priceEveryMinutes">
-        <option value="1">كل دقيقة</option>
-        <option value="2">كل 2 دقيقة</option>
-        <option value="5" selected>كل 5 دقائق</option>
-        <option value="10">كل 10 دقائق</option>
-        <option value="15">كل 15 دقيقة</option>
-        <option value="30">كل 30 دقيقة</option>
-        <option value="60">كل ساعة</option>
-      </select>
-      <div class="checks">
-        <label class="check"><input id="showHighLow" type="checkbox" checked> إظهار أعلى وأدنى سعر خلال 24 ساعة</label>
-        <label class="check"><input id="showVolume" type="checkbox" checked> إظهار حجم التداول خلال 24 ساعة</label>
-      </div>
-      <div class="actions">
-        <button id="saveBtn">حفظ الإعدادات</button>
-        <button id="publishBtn" class="secondary">نشر / تحديث الآن</button>
+    <section id="tab-channels" hidden>
+      <div id="channels"></div>
+      <button id="addChannel" class="secondary wide">+ إضافة قناة جديدة</button>
+    </section>
+
+    <section id="tab-general" hidden>
+      <div class="panel">
+        <h2>إعدادات عامة</h2>
+        <label class="check"><input id="paused" type="checkbox"> إيقاف كل النشر مؤقتاً</label>
+        <label>Chat ID الخاص بك لتنبيهات الأعطال (اختياري)</label>
+        <input id="adminChatId" dir="ltr" placeholder="مثال: 123456789">
+        <p class="hint">إذا فشل نشر قناة يوصلك تنبيه على تيليغرام (مرة كل 30 دقيقة كحد أقصى لكل مشكلة). لازم تكون سويت Start للبوت من حسابك.</p>
       </div>
     </section>
 
-    <section class="panel">
-      <h2>حالة البوت</h2>
-      <div id="status" class="status">أدخل رابط Worker ومفتاح الإدارة أولاً.</div>
-    </section>
+    <div class="savebar">
+      <span id="dirty"></span>
+      <button id="saveBtn" disabled>حفظ التغييرات</button>
+    </div>
+  </div>
 
-    <div id="notice" role="status"></div>
-    <footer>الأسعار من Binance Public Spot Market Data · الجدولة من الكود (كرون واحد كل دقيقة)</footer>
-  </main>
-  <script src="app.js"></script>
+  <div id="notice" role="status"></div>
+  <footer>الأسعار من Binance Public Spot Market Data · الجدولة داخل Durable Object</footer>
+</main>
+
+<div id="modal" hidden>
+  <div class="sheet"><pre id="modalBody"></pre><button id="modalClose" class="secondary wide">إغلاق</button></div>
+</div>
+<script src="app.js"></script>
 </body>
 </html>
