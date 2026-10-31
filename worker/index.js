@@ -20,6 +20,8 @@ const ROUTES = {
   "POST /api/publish": "publish",
   "POST /api/preview": "preview",
   "POST /api/test": "test",
+  "POST /api/diagnose": "diagnose",
+  "POST /api/secret": "secret",
   "POST /api/tick": "tick"
 };
 

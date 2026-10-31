@@ -1,4 +1,4 @@
-export const ENDPOINTS = [
+export const DEFAULT_ENDPOINTS = [
   "https://data-api.binance.vision",
   "https://api.binance.com",
   "https://api-gcp.binance.com",
@@ -8,36 +8,99 @@ export const ENDPOINTS = [
   "https://api4.binance.com"
 ];
 
+// إعدادات التشغيل (تأتي من اللوحة عبر applyBinanceSettings)
+const rt = {
+  endpoints: DEFAULT_ENDPOINTS,
+  timeoutMs: 6000,
+  sticky: null,       // آخر رابط نجح: نبدأ به المرة القادمة
+  lastOkAt: 0,
+  lastOkBase: null,
+  lastFailAt: 0,
+  lastFail: null
+};
+
+export function applyBinanceSettings(settings) {
+  const list = (settings?.endpoints || [])
+    .filter(e => e && e.enabled !== false && e.url)
+    .map(e => String(e.url).replace(/\/+$/, ""));
+  rt.endpoints = list.length ? list : DEFAULT_ENDPOINTS;
+  rt.timeoutMs = Math.min(30000, Math.max(2000, Number(settings?.timeoutMs) || 6000));
+  if (rt.sticky && !rt.endpoints.includes(rt.sticky)) rt.sticky = null;
+}
+
+export function binanceState() {
+  return {
+    lastOkAt: rt.lastOkAt, lastOkBase: rt.lastOkBase,
+    lastFailAt: rt.lastFailAt, lastFail: rt.lastFail
+  };
+}
+
 class BadRequestError extends Error {
   constructor(msg) { super(msg); this.code = "BAD_REQUEST"; }
+}
+
+function summarize(errors) {
+  const counts = new Map();
+  for (const e of errors) counts.set(e.what, (counts.get(e.what) || 0) + 1);
+  return [...counts].map(([k, n]) => `${k} ×${n}`).join(", ");
 }
 
 export async function binanceGet(path, params = {}) {
   const qs = new URLSearchParams(params).toString();
   const errors = [];
 
-  for (const base of ENDPOINTS) {
+  const order = rt.sticky && rt.endpoints.includes(rt.sticky)
+    ? [rt.sticky, ...rt.endpoints.filter(b => b !== rt.sticky)]
+    : rt.endpoints;
+
+  for (const base of order) {
     try {
       const response = await fetch(`${base}${path}${qs ? "?" + qs : ""}`, {
         headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(6000),
+        signal: AbortSignal.timeout(rt.timeoutMs),
         cf: { cacheTtl: 0, cacheEverything: false }
       });
 
       const body = await response.text();
 
       if (response.status === 400) throw new BadRequestError(body.slice(0, 200));
-      if (!response.ok) { errors.push(`${base}: HTTP ${response.status}`); continue; }
+      if (!response.ok) { errors.push({ base, what: `HTTP ${response.status}` }); continue; }
 
-      return JSON.parse(body);
+      const data = JSON.parse(body);
+      rt.sticky = base;
+      rt.lastOkAt = Date.now();
+      rt.lastOkBase = base;
+      return data;
     } catch (error) {
       if (error instanceof BadRequestError) throw error;
-      errors.push(`${base}: ${error.message}`);
+      errors.push({ base, what: error.name === "TimeoutError" ? "timeout" : String(error.message).slice(0, 40) });
     }
   }
 
+  const summary = summarize(errors);
   console.error("BINANCE_ERRORS:", JSON.stringify(errors));
-  throw new Error("BINANCE_ALL_ENDPOINTS_FAILED");
+  rt.lastFailAt = Date.now();
+  rt.lastFail = summary;
+  throw new Error(`BINANCE_ALL_ENDPOINTS_FAILED (${summary})`);
+}
+
+// تشخيص: يجرب كل رابط (حتى المعطل) ويرجع النتيجة
+export async function diagnoseEndpoints(urls, timeoutMs = 6000) {
+  return Promise.all(urls.map(async base => {
+    const t0 = Date.now();
+    try {
+      const r = await fetch(`${base}/api/v3/ping`, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(timeoutMs),
+        cf: { cacheTtl: 0, cacheEverything: false }
+      });
+      await r.text();
+      return { url: base, ok: r.ok, status: r.status, ms: Date.now() - t0 };
+    } catch (e) {
+      return { url: base, ok: false, status: 0, ms: Date.now() - t0,
+        error: e.name === "TimeoutError" ? "timeout" : String(e.message).slice(0, 80) };
+    }
+  }));
 }
 
 const valid = { set: null, at: 0 };

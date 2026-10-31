@@ -1,4 +1,5 @@
 import { uid } from "./util.js";
+import { DEFAULT_ENDPOINTS } from "./binance.js";
 
 export const JOBS = ["price", "hourly", "four_hour", "daily", "weekly"];
 export const MAX_CHANNELS = 20;
@@ -139,6 +140,38 @@ function sanitizeChannel(c, old) {
   };
 }
 
+export function defaultSettings() {
+  return {
+    endpoints: DEFAULT_ENDPOINTS.map(url => ({ url, enabled: true })),
+    timeoutMs: 6000
+  };
+}
+
+export function sanitizeSettings(input, existing) {
+  const base = existing || defaultSettings();
+  if (!input || typeof input !== "object") return base;
+
+  const raw = Array.isArray(input.endpoints) ? input.endpoints : base.endpoints;
+  if (raw.length > 15) throw new Error("الحد الأقصى 15 رابط Binance");
+
+  const seen = new Set();
+  const endpoints = [];
+  for (const e of raw) {
+    let url = String(e?.url ?? "").trim().replace(/\/+$/, "");
+    if (!url) continue;
+    if (!/^https:\/\/[A-Za-z0-9.-]+(:\d{2,5})?(\/[A-Za-z0-9._~\-\/]*)?$/.test(url)) {
+      throw new Error(`رابط غير صالح: ${url} (لازم يبدأ بـ https:// بدون ? أو #)`);
+    }
+    if (seen.has(url)) continue;
+    seen.add(url);
+    endpoints.push({ url, enabled: e.enabled !== false });
+  }
+
+  if (!endpoints.some(e => e.enabled)) throw new Error("لازم رابط واحد فعّال على الأقل");
+
+  return { endpoints, timeoutMs: int(input.timeoutMs, 2000, 30000, 6000) };
+}
+
 export function sanitizeConfig(input, existing) {
   if (!input || typeof input !== "object") throw new Error("إعدادات غير صالحة");
 
@@ -161,6 +194,7 @@ export function sanitizeConfig(input, existing) {
     version: 2,
     paused: Boolean(input.paused),
     adminChatId,
+    settings: sanitizeSettings(input.settings, existing?.settings),
     channels: clean
   };
 }
@@ -179,5 +213,5 @@ export function buildInitialConfig(env, legacy) {
 
   first.jobs.price.everyMinutes = int(legacy?.priceEveryMinutes, 1, 1440, 5);
 
-  return { version: 2, paused: false, adminChatId: "", channels: [first] };
+  return { version: 2, paused: false, adminChatId: "", settings: defaultSettings(), channels: [first] };
 }

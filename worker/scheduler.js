@@ -1,7 +1,7 @@
 import { json, sleep, slotStart } from "./util.js";
-import { JOBS, sanitizeConfig, buildInitialConfig } from "./config.js";
-import { fetchDataset, priceMap, getCloses, rsi, sma } from "./binance.js";
-import { sendMessage, sendPlain } from "./telegram.js";
+import { JOBS, sanitizeConfig, buildInitialConfig, defaultSettings } from "./config.js";
+import { fetchDataset, priceMap, getCloses, rsi, sma, applyBinanceSettings, binanceState, diagnoseEndpoints } from "./binance.js";
+import { sendMessage, sendPlain, telegramCall } from "./telegram.js";
 import {
   buildPriceMessages, buildReport, windowItem, REPORTS,
   buildMoveAlert, buildLevelAlert, coinName
@@ -36,7 +36,7 @@ export class Scheduler {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
-    this.s = { config: null, slots: {}, logs: [], last: {}, hist: {}, alert: {} };
+    this.s = { config: null, slots: {}, logs: [], last: {}, hist: {}, alert: {}, secrets: {} };
     this.lastTickAt = null;
     this.lastAlertMinute = 0;
     this.histSavedAt = 0;
@@ -44,7 +44,7 @@ export class Scheduler {
     this.authFails = new Map();
 
     ctx.blockConcurrencyWhile(async () => {
-      const m = await ctx.storage.get(["config", "slots", "logs", "last", "hist", "alert"]);
+      const m = await ctx.storage.get(["config", "slots", "logs", "last", "hist", "alert", "secrets"]);
       for (const k of Object.keys(this.s)) {
         if (m.get(k) !== undefined) this.s[k] = m.get(k);
       }
@@ -57,10 +57,23 @@ export class Scheduler {
         await ctx.storage.put("config", this.s.config);
       }
 
+      // نسخ قديمة بدون settings
+      if (!this.s.config.settings) {
+        this.s.config.settings = defaultSettings();
+        await ctx.storage.put("config", this.s.config);
+      }
+      applyBinanceSettings(this.s.config.settings);
+
       if ((await ctx.storage.getAlarm()) === null) {
         await ctx.storage.setAlarm(nextMinute());
       }
     });
+  }
+
+  // التوكن المحفوظ من اللوحة له الأولوية، وإلا نستعمل Secret الـ Worker
+  tgEnv() {
+    const token = this.s.secrets?.telegramToken || this.env.TELEGRAM_BOT_TOKEN;
+    return { ...this.env, TELEGRAM_BOT_TOKEN: token };
   }
 
   persist(...keys) {
@@ -90,11 +103,13 @@ export class Scheduler {
         return {
           config: this.s.config,
           status: await this.status(Date.now()),
-          logs: this.s.logs.slice(0, 60)
+          logs: this.s.logs.slice(0, 60),
+          secrets: this.secretsInfo()
         };
 
       case "config": {
         this.s.config = sanitizeConfig(body.config, this.s.config);
+        applyBinanceSettings(this.s.config.settings);
         await this.persist("config");
         // تنظيف حالة الجدولة للقنوات المحذوفة
         const ids = new Set(this.s.config.channels.map(c => c.id));
@@ -104,6 +119,15 @@ export class Scheduler {
         await this.persist("slots");
         return { config: this.s.config };
       }
+
+      case "diagnose": {
+        const urls = (this.s.config.settings.endpoints || []).map(e => e.url);
+        const extra = String(body.url || "").trim().replace(/\/+$/, "");
+        if (extra && /^https:\/\/[A-Za-z0-9.-]+(:\d{2,5})?(\/[A-Za-z0-9._~\-\/]*)?$/.test(extra) && !urls.includes(extra)) urls.push(extra);
+        return { results: await diagnoseEndpoints(urls, this.s.config.settings.timeoutMs) };
+      }
+
+      case "secret": return this.saveToken(body.telegramToken);
 
       case "publish": return this.publishNow(body.channelId, body.job);
       case "preview": return this.previewNow(body.channelId, body.job);
@@ -127,6 +151,43 @@ export class Scheduler {
 
       default: throw new Error("NOT_FOUND");
     }
+  }
+
+  // ---------- توكن تيليغرام من اللوحة ----------
+
+  secretsInfo() {
+    const t = this.s.secrets?.telegramToken;
+    return {
+      source: t ? "dashboard" : this.env.TELEGRAM_BOT_TOKEN ? "env" : "none",
+      masked: t ? `${t.split(":")[0]}:••••${t.slice(-4)}` : null
+    };
+  }
+
+  async saveToken(token) {
+    const t = String(token ?? "").trim();
+
+    if (!t) {
+      // حذف التوكن المحفوظ بالوحة (يرجع لـ Secret الـ Worker إن وجد)
+      delete this.s.secrets.telegramToken;
+      await this.persist("secrets");
+      return { secrets: this.secretsInfo() };
+    }
+
+    if (!/^\d{6,12}:[A-Za-z0-9_-]{30,50}$/.test(t)) {
+      throw new Error("شكل التوكن غير صحيح. انسخه كامل من BotFather");
+    }
+
+    // نتحقق منه عند تيليغرام قبل الحفظ
+    let me;
+    try {
+      me = await telegramCall({ ...this.env, TELEGRAM_BOT_TOKEN: t }, "getMe", {});
+    } catch (e) {
+      throw new Error("تيليغرام رفض التوكن: " + e.message);
+    }
+
+    this.s.secrets.telegramToken = t;
+    await this.persist("secrets");
+    return { secrets: this.secretsInfo(), bot: me.username };
   }
 
   // ---------- حماية من التخمين ----------
@@ -270,7 +331,7 @@ export class Scheduler {
 
     let last;
     for (let i = 0; i < messages.length; i++) {
-      last = await sendMessage(this.env, ch, messages[i]);
+      last = await sendMessage(this.tgEnv(), ch, messages[i]);
       if (i < messages.length - 1) await sleep(400);
     }
 
@@ -317,7 +378,7 @@ export class Scheduler {
     this.notifyAt.set(key, Date.now());
 
     try {
-      await sendPlain(this.env, chat,
+      await sendPlain(this.tgEnv(), chat,
         `⚠️ <b>فشل النشر</b>\nالقناة: ${escapeHtml(ch.name)}\nالنوع: ${job}\nالخطأ: ${escapeHtml(message)}`);
     } catch { /* تجاهل */ }
   }
@@ -361,7 +422,7 @@ export class Scheduler {
 
   async testNow(channelId) {
     const ch = this.channel(channelId);
-    const r = await sendMessage(this.env, ch,
+    const r = await sendMessage(this.tgEnv(), ch,
       `✅ <b>${escapeHtml(ch.title)}</b>\nConnection test OK — ${escapeHtml(ch.name)}`);
     return { message_id: r.message_id };
   }
@@ -469,7 +530,7 @@ export class Scheduler {
   async sendAlert(ch, text) {
     const t0 = Date.now();
     try {
-      const r = await sendMessage(this.env, ch, text);
+      const r = await sendMessage(this.tgEnv(), ch, text);
       this.record(ch, "alert", true, r.message_id, Date.now() - t0);
     } catch (error) {
       this.record(ch, "alert", false, null, Date.now() - t0, error.message);
@@ -500,6 +561,7 @@ export class Scheduler {
       now,
       lastTickAt: this.lastTickAt,
       nextAlarm: await this.ctx.storage.getAlarm(),
+      binance: binanceState(),
       paused: this.s.config.paused,
       channels
     };
