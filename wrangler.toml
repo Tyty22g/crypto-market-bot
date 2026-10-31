@@ -2,15 +2,19 @@ name = "crypto-market-bot"
 main = "worker/index.js"
 compatibility_date = "2025-09-01"
 
-# كرون واحد فقط. الكود نفسه يقرر متى ينشر الأسعار / تقرير الساعة / تقرير 4 ساعات.
+[observability]
+enabled = true
+
+# كرون واحد كل دقيقة (نفس طريقة النسخة القديمة الشغالة). الكود يقرر شنو ينشر ومتى.
 [triggers]
 crons = ["* * * * *"]
 
+# الإعدادات تُحفظ بـ KV (نفس الـ namespace القديم، نقرأ إعداداتك القديمة منه تلقائياً)
 [[kv_namespaces]]
 binding = "CONFIG"
 id = "05ddbf5016944b54a8b2b0fe862c1d0b"
 
-# حذف الـ Durable Object القديم (Scheduler) من نسخة سابقة. النسخة الحالية تحفظ الحالة في KV ولا تحتاجه.
+# حذف الـ Durable Object الذي أضافته النسخة 2/3 (لم نعد نحتاجه). يُنفّذ مرة وحدة عند النشر.
 [[migrations]]
-tag = "delete-scheduler-v2"
+tag = "v2-remove-do"
 deleted_classes = ["Scheduler"]
