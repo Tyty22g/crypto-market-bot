@@ -14,7 +14,7 @@ export function channelButton(ch) {
 
 const SEP = "━━━━━━━━━━━━━━━━━━";
 const footer = (ch, now, src = "Binance Spot") =>
-  `${SEP}\n🕒 ${formatTime(now, ch.tzOffset)}\n📡 Source: ${src}`;
+  `${SEP}\n🕒 ${formatTime(now, ch.tzOffset)}`;
 
 function plainPrice(x) {
   const s = String(x).trim();
