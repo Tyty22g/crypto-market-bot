@@ -17,11 +17,14 @@ const footer = (ch, now, src = "Binance Spot") =>
   `${SEP}\n🕒 ${formatTime(now, ch.tzOffset)}`;
 
 function plainPrice(x) {
-  const s = String(x).trim();
-  if (/^\d+\.\d+$/.test(s)) return s.replace(/0+$/, "").replace(/\.$/, "");
-  if (/^\d+$/.test(s)) return s;
-  const n = Number(s);
-  return Number.isFinite(n) ? n.toFixed(8).replace(/\.?0+$/, "") : s;
+  let s = String(x).trim();
+  if (/^\d+\.\d+$/.test(s)) s = s.replace(/0+$/, "").replace(/\.$/, "");
+  else if (!/^\d+$/.test(s)) {
+    const n = Number(s);
+    s = Number.isFinite(n) ? n.toFixed(8).replace(/\.?0+$/, "") : s;
+  }
+  const [i, f] = s.split(".");
+  return i.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (f ? "." + f : "");
 }
 
 // قناة سعر فقط: رسالة قصيرة لكل عملة مثل $5677.77666
