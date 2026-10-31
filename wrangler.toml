@@ -2,10 +2,22 @@ name = "crypto-market-bot"
 main = "worker/index.js"
 compatibility_date = "2025-09-01"
 
-# كرون واحد فقط. الكود نفسه يقرر متى ينشر الأسعار / تقرير الساعة / تقرير 4 ساعات.
+[observability]
+enabled = true
+
+# الكرون هنا حارس فقط (كل دقيقة). الجدولة الفعلية تتم داخل Durable Object بمنبّه دقيق.
 [triggers]
 crons = ["* * * * *"]
 
+[[durable_objects.bindings]]
+name = "SCHEDULER"
+class_name = "Scheduler"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Scheduler"]
+
+# يُستعمل مرة وحدة فقط لنقل إعداداتك القديمة. لا توجد أي كتابة على KV.
 [[kv_namespaces]]
 binding = "CONFIG"
 id = "05ddbf5016944b54a8b2b0fe862c1d0b"
