@@ -13,8 +13,3 @@ crons = ["* * * * *"]
 [[kv_namespaces]]
 binding = "CONFIG"
 id = "05ddbf5016944b54a8b2b0fe862c1d0b"
-
-# حذف الـ Durable Object الذي أضافته النسخة 2/3 (لم نعد نحتاجه). يُنفّذ مرة وحدة عند النشر.
-[[migrations]]
-tag = "v2-remove-do"
-deleted_classes = ["Scheduler"]
