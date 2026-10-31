@@ -1,191 +1,430 @@
 const $ = id => document.getElementById(id);
-const ERR = {
-  UNAUTHORIZED: "مفتاح ADMIN_KEY غير صحيح.",
-  INVALID_CHAT_ID: "معرّف القناة غير صالح. استخدم @username أو رقم يبدأ بـ -100.",
-  CHAT_ID_REQUIRED: "معرّف القناة مطلوب.",
-  CHAT_ID_MISSING: "لا يوجد chat id. أضف TELEGRAM_CHAT_ID أو اكتب معرّف القناة.",
-  INVALID_SYMBOL_FORMAT: "صيغة الأزواج غير صحيحة. يجب أن تنتهي بـ USDT مثل BTCUSDT.",
-  INVALID_SYMBOL_COUNT: "عدد الأزواج بين 1 و100.",
-  TOO_MANY_CHANNELS: "وصلت الحد الأقصى للقنوات (20).",
-  CANNOT_DELETE_LAST: "لا يمكن حذف آخر قناة.",
-  TELEGRAM_SECRETS_MISSING: "TELEGRAM_BOT_TOKEN غير مضبوط في Cloudflare."
-};
-let channels = [], state = { last: {}, errors: {} }, current = null; // current: id | "new"
+const esc = v => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-const PRESETS = {
-  "الرئيسية": "BTC ETH BNB SOL XRP",
-  "ميم": "DOGE SHIB PEPE FLOKI BONK WIF",
-  "ذكاء اصطناعي": "FET RENDER TAO WLD ARKM NEAR",
-  "Layer1": "ADA AVAX DOT NEAR APT SUI TON",
-  "DeFi": "UNI AAVE CRV LDO MKR COMP",
-  "ألعاب": "AXS SAND MANA GALA IMX"
-};
+let cfg = null, status = null, logs = [], secrets = null, dirty = false;
+const openIds = new Set();
+let timer = null;
 
+const JOB_LABEL = {
+  price: "الأسعار", hourly: "تحليل الساعة", four_hour: "تقرير 4 ساعات",
+  daily: "التقرير اليومي", weekly: "التقرير الأسبوعي", alert: "تنبيه"
+};
+const DAYS = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+const INTERVALS = [1, 2, 5, 10, 15, 30, 60, 120, 240, 720, 1440];
+const intervalLabel = n => n < 60 ? `كل ${n} دقيقة` : n === 60 ? "كل ساعة" : n < 1440 ? `كل ${n / 60} ساعات` : "كل يوم";
+const TZ = [[0, "UTC"], [1, "UTC+1"], [2, "UTC+2 (مصر/الأردن/لبنان)"], [3, "UTC+3 (العراق/السعودية/الكويت/تركيا)"],
+  [3.5, "UTC+3:30 (إيران)"], [4, "UTC+4 (الإمارات/عمان)"], [5, "UTC+5"], [8, "UTC+8"], [-5, "UTC-5 (نيويورك)"]];
+
+// ---------- الاتصال ----------
+const store = () => ($("remember").checked ? localStorage : sessionStorage);
+function loadCreds() {
+  const s = localStorage.getItem("cmb_url") ? localStorage : sessionStorage;
+  $("workerUrl").value = s.getItem("cmb_url") || "";
+  $("adminKey").value = s.getItem("cmb_key") || "";
+}
 const base = () => $("workerUrl").value.trim().replace(/\/+$/, "");
-function notice(msg, type = "ok") { $("notice").textContent = msg; $("notice").className = type; }
-function errText(e) { const m = String(e.message || e); return ERR[m] || ERR[m.split(":")[0]] || m; }
 
-async function api(path, options = {}) {
-  if (!base() || !$("adminKey").value.trim()) throw new Error("أدخل رابط Worker ومفتاح ADMIN_KEY.");
-  const r = await fetch(base() + path, { ...options, headers: { "content-type": "application/json", authorization: "Bearer " + $("adminKey").value.trim() } });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok || data.ok === false) throw new Error(data.error_type || data.error || "فشل الاتصال");
+function notice(msg, type = "ok") { $("notice").textContent = msg; $("notice").className = type; }
+
+async function api(path, method = "GET", body) {
+  const r = await fetch(base() + path, {
+    method,
+    headers: { "content-type": "application/json", authorization: "Bearer " + $("adminKey").value.trim() },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  let data;
+  try { data = await r.json(); } catch { throw new Error("رد غير صالح من الـ Worker"); }
+  if (!r.ok || !data.ok) throw new Error(data.error || "فشل الاتصال");
   return data;
 }
 
-// ----- list -----
-function ago(iso) {
-  if (!iso) return "—";
-  const m = Math.round((Date.now() - new Date(iso)) / 60000);
-  return m < 1 ? "الآن" : m < 60 ? `قبل ${m} د` : m < 1440 ? `قبل ${Math.round(m / 60)} س` : `قبل ${Math.round(m / 1440)} يوم`;
-}
-function renderList() {
-  const box = $("channels"); box.textContent = "";
-  channels.forEach(c => {
-    const el = document.createElement("div");
-    el.className = "card" + (c.id === current ? " sel" : "") + (c.enabled ? "" : " off");
-    const b = document.createElement("b"); b.textContent = c.name + (c.enabled ? "" : " (متوقفة)");
-    const s1 = document.createElement("small"); s1.textContent = `${c.title} · ${c.symbols.length} عملة · ${c.chatId || "القناة الافتراضية"}`;
-    const L = k => (state.last[`${c.id}:${k}`] || {}).at;
-    const s2 = document.createElement("small");
-    s2.textContent = `آخر أسعار: ${ago(L("price"))} · ساعة: ${ago(L("hourly"))} · 4س: ${ago(L("four_hour"))}`;
-    el.append(b, s1, s2);
-    const e = state.errors[c.id];
-    if (e) { const s3 = document.createElement("small"); s3.className = "err"; s3.textContent = `⚠️ ${e.job}: ${e.message}`; el.append(s3); }
-    el.onclick = () => openEditor(c.id);
-    box.append(el);
-  });
-  if (!channels.length) box.innerHTML = '<p class="hint">لا توجد قنوات.</p>';
-}
-
-async function load() {
-  const d = await api("/api/channels");
-  channels = d.channels; state = d.state || state; renderList();
-}
-
-// ----- editor -----
-function fill(c) {
-  $("f_name").value = c.name; $("f_chatId").value = c.chatId || ""; $("f_title").value = c.title;
-  $("f_url").value = c.channelUrl || ""; $("f_btn").value = c.buttonText || "";
-  $("f_symbols").value = c.symbols.join("\n");
-  $("f_price").checked = c.price.enabled; $("f_every").value = String(c.price.every);
-  $("f_hourly").checked = c.hourly.enabled; $("f_four").checked = c.fourHour.enabled;
-  $("f_daily").checked = c.daily.enabled; $("f_dailyHour").value = c.daily.hour;
-  $("f_alerts").checked = c.alerts.enabled; $("f_thr").value = c.alerts.threshold;
-  $("f_win").value = c.alerts.window; $("f_cool").value = String(c.alerts.cooldown);
-  $("f_hl").checked = c.showHighLow; $("f_vol").checked = c.showVolume;
-  $("f_enabled").checked = c.enabled; $("f_tz").value = c.tzOffset;
-}
-const NEW_CH = {
-  name: "", chatId: "", title: "", channelUrl: "", buttonText: "", enabled: true,
-  symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"], showHighLow: true, showVolume: true, tzOffset: 3,
-  price: { enabled: true, every: 5 }, hourly: { enabled: true }, fourHour: { enabled: true },
-  daily: { enabled: false, hour: 21 }, alerts: { enabled: false, threshold: 3, window: "15m", cooldown: 60 }
-};
-function openEditor(id) {
-  current = id;
-  const isNew = id === "new";
-  $("editor").hidden = false;
-  $("editorTitle").textContent = isNew ? "قناة جديدة" : "تعديل: " + channels.find(c => c.id === id).name;
-  fill(isNew ? NEW_CH : channels.find(c => c.id === id));
-  $("startRow").hidden = !isNew; $("deleteBtn").hidden = isNew;
-  document.querySelector(".pubs").hidden = isNew;
-  $("chatHint").hidden = isNew || id !== "main";
-  renderList(); $("editor").scrollIntoView({ behavior: "smooth" });
-}
-function readForm() {
-  const syms = [...new Set($("f_symbols").value.split(/[\n,،\s]+/).map(x => x.trim().toUpperCase()).filter(Boolean))];
-  return {
-    name: $("f_name").value.trim(), chatId: $("f_chatId").value.trim(), title: $("f_title").value.trim(),
-    channelUrl: $("f_url").value.trim(), buttonText: $("f_btn").value.trim(), symbols: syms,
-    price: { enabled: $("f_price").checked, every: Number($("f_every").value) },
-    hourly: { enabled: $("f_hourly").checked }, fourHour: { enabled: $("f_four").checked },
-    daily: { enabled: $("f_daily").checked, hour: Number($("f_dailyHour").value) },
-    alerts: { enabled: $("f_alerts").checked, threshold: Number($("f_thr").value), window: $("f_win").value, cooldown: Number($("f_cool").value) },
-    showHighLow: $("f_hl").checked, showVolume: $("f_vol").checked, enabled: $("f_enabled").checked,
-    tzOffset: Number($("f_tz").value || 0)
-  };
-}
-
-function buildPresets() {
-  const box = $("presets");
-  Object.entries(PRESETS).forEach(([name, list]) => {
-    const b = document.createElement("button"); b.type = "button"; b.textContent = "+ " + name;
-    b.onclick = () => {
-      const cur = $("f_symbols").value.split(/[\n,\s]+/).filter(Boolean);
-      const add = list.split(" ").map(x => x + "USDT");
-      $("f_symbols").value = [...new Set([...cur, ...add])].join("\n");
-    };
-    box.append(b);
-  });
-  const clr = document.createElement("button"); clr.type = "button"; clr.textContent = "مسح";
-  clr.onclick = () => { $("f_symbols").value = ""; };
-  box.append(clr);
-}
-
-// ----- actions -----
-$("loadBtn").onclick = async () => {
+async function connect() {
   try {
-    localStorage.setItem("workerUrl", base());
-    if ($("remember").checked) localStorage.setItem("adminKey", $("adminKey").value.trim()); else localStorage.removeItem("adminKey");
-  } catch (e) {}
-  try { await load(); notice("تم تحميل القنوات."); } catch (e) { notice(errText(e), "err"); }
-};
-$("newBtn").onclick = () => openEditor("new");
+    const d = await api("/api/state");
+    localStorage.removeItem("cmb_url"); localStorage.removeItem("cmb_key");
+    sessionStorage.removeItem("cmb_url"); sessionStorage.removeItem("cmb_key");
+    store().setItem("cmb_url", base()); store().setItem("cmb_key", $("adminKey").value.trim());
+    cfg = d.config; status = d.status; logs = d.logs; secrets = d.secrets; dirty = false;
+    $("login").hidden = true; $("app").hidden = false;
+    renderAll();
+    notice("تم الاتصال.");
+    clearInterval(timer);
+    timer = setInterval(refreshStatus, 20000);
+  } catch (e) { notice(e.message, "err"); }
+}
 
-$("saveBtn").onclick = async () => {
-  const btn = $("saveBtn"); btn.disabled = true;
+async function refreshStatus() {
+  if (!cfg || document.hidden || $("tab-status").hidden) return;
+  try { const d = await api("/api/state"); status = d.status; logs = d.logs; secrets = d.secrets; renderStatus(); } catch { /* تجاهل */ }
+}
+
+// ---------- أدوات ----------
+function ago(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return `قبل ${s} ث`;
+  if (s < 3600) return `قبل ${Math.floor(s / 60)} د`;
+  if (s < 86400) return `قبل ${Math.floor(s / 3600)} س`;
+  return `قبل ${Math.floor(s / 86400)} يوم`;
+}
+function inn(ms) {
+  const s = Math.max(0, Math.round((ms - Date.now()) / 1000));
+  if (s < 60) return `بعد ${s} ث`;
+  if (s < 3600) return `بعد ${Math.floor(s / 60)} د`;
+  if (s < 86400) return `بعد ${Math.floor(s / 3600)} س ${Math.floor((s % 3600) / 60)} د`;
+  return `بعد ${Math.floor(s / 86400)} يوم`;
+}
+function hint(err) {
+  if (!err) return "";
+  if (/chat not found/i.test(err)) return " — الـ chat id غلط أو البوت مو مضاف للقناة";
+  if (/not enough rights|forbidden|can't post|kicked/i.test(err)) return " — البوت لازم يكون أدمن بصلاحية النشر";
+  if (/BINANCE.*(451|403)/i.test(err)) return " — Binance تحجب منطقة السيرفر. أضف رابط وسيط من تبويب الاتصال";
+  if (/BINANCE/i.test(err)) return " — تعذر الاتصال بـ Binance. افحص الروابط من تبويب الاتصال";
+  if (/NO_DATA|NO_PRICE/i.test(err)) return " — ما وصلت بيانات للأزواج";
+  return "";
+}
+function setPath(obj, path, val) {
+  const k = path.split(".");
+  let o = obj;
+  for (let i = 0; i < k.length - 1; i++) o = o[k[i]];
+  o[k[k.length - 1]] = val;
+}
+function markDirty() {
+  dirty = true;
+  $("dirty").textContent = "● تغييرات غير محفوظة";
+  $("saveBtn").disabled = false;
+}
+function clean() {
+  dirty = false; $("dirty").textContent = ""; $("saveBtn").disabled = true;
+}
+
+// ---------- حقول ----------
+const F = {
+  text: (label, path, v, ph = "", dir = "") =>
+    `<label>${label}<input data-path="${path}" data-type="text" value="${esc(v)}" placeholder="${esc(ph)}" ${dir}></label>`,
+  chk: (label, path, v) =>
+    `<label class="check"><input type="checkbox" data-path="${path}" data-type="bool" ${v ? "checked" : ""}> ${label}</label>`,
+  num: (label, path, v, min, max, step = 1) =>
+    `<label>${label}<input type="number" data-path="${path}" data-type="num" value="${esc(v)}" min="${min}" max="${max}" step="${step}"></label>`,
+  sel: (label, path, v, opts) =>
+    `<label>${label}<select data-path="${path}" data-type="num">${opts.map(([val, t]) =>
+      `<option value="${val}" ${Number(val) === Number(v) ? "selected" : ""}>${t}</option>`).join("")}</select></label>`
+};
+const HOURS = Array.from({ length: 24 }, (_, i) => [i, String(i).padStart(2, "0") + ":00"]);
+
+function channelCard(ch, i) {
+  const p = `channels.${i}`;
+  const j = ch.jobs, mv = ch.alerts.moves;
+  const lv = ch.alerts.levels.map((l, k) => `
+    <div class="row">
+      <span class="grow" dir="ltr">${esc(l.symbol.replace(/USDT$/, ""))} ${l.dir === "above" ? "▲ فوق" : "▼ تحت"} ${esc(l.price)}</span>
+      ${l.triggered ? `<span class="badge ok">تم التنبيه</span><button class="secondary small" data-act="rearm" data-i="${i}" data-j="${k}">إعادة تفعيل</button>` : `<span class="badge">فعّال</span>`}
+      <button class="danger small" data-act="del-level" data-i="${i}" data-j="${k}">حذف</button>
+    </div>`).join("") || `<p class="muted">ما أكو مستويات.</p>`;
+
+  return `
+  <details class="card" data-id="${esc(ch.id)}" ${openIds.has(ch.id) ? "open" : ""}>
+    <summary><span>${esc(ch.name)}</span>
+      <span class="badge ${ch.enabled ? "" : "off"}">${ch.enabled ? "فعّالة" : "معطلة"}</span>
+      <span class="muted" style="margin-right:auto">${ch.symbols.length} زوج</span></summary>
+    <div class="body">
+      ${F.text("اسم القناة (للوحة فقط)", `${p}.name`, ch.name)}
+      ${F.chk("القناة فعّالة", `${p}.enabled`, ch.enabled)}
+      ${F.text("Chat ID أو @username للقناة", `${p}.chatId`, ch.chatId, "@MyChannel أو -100123456789", 'dir="ltr"')}
+      ${F.text("عنوان المنشور", `${p}.title`, ch.title)}
+      ${F.text("رابط القناة (زر الانضمام تحت المنشور)", `${p}.channelUrl`, ch.channelUrl, "https://t.me/...", 'dir="ltr"')}
+      ${F.text("نص الزر (اختياري)", `${p}.buttonText`, ch.buttonText, "📢 JOIN ...")}
+      <label>العملات (كل عملة بسطر. تكتب BTC أو BTCUSDT)
+        <textarea rows="7" dir="ltr" spellcheck="false" data-path="${p}.symbols" data-type="symbols">${esc(ch.symbols.join("\n"))}</textarea></label>
+      ${F.sel("فرق التوقيت (يحدد وقت التقارير والعرض)", `${p}.tzOffset`, ch.tzOffset, TZ)}
+      ${F.chk("إظهار أعلى/أدنى سعر 24س", `${p}.showHighLow`, ch.showHighLow)}
+      ${F.chk("إظهار حجم التداول", `${p}.showVolume`, ch.showVolume)}
+
+      <div class="sec"><h3>الجدولة</h3>
+        ${F.chk("نشر الأسعار", `${p}.jobs.price.enabled`, j.price.enabled)}
+        ${F.sel("كل كم", `${p}.jobs.price.everyMinutes`, j.price.everyMinutes, INTERVALS.map(n => [n, intervalLabel(n)]))}
+        ${F.chk("تحليل الساعة (كل ساعة)", `${p}.jobs.hourly.enabled`, j.hourly.enabled)}
+        ${F.chk("تقرير 4 ساعات", `${p}.jobs.four_hour.enabled`, j.four_hour.enabled)}
+        ${F.chk("مؤشرات RSI و MA داخل تقرير الـ4 ساعات (لأول 5 عملات)", `${p}.technicals`, ch.technicals)}
+        ${F.chk("تقرير يومي", `${p}.jobs.daily.enabled`, j.daily.enabled)}
+        ${F.sel("ساعة التقرير اليومي", `${p}.jobs.daily.hour`, j.daily.hour, HOURS)}
+        ${F.chk("تقرير أسبوعي", `${p}.jobs.weekly.enabled`, j.weekly.enabled)}
+        <div class="grid2">
+          ${F.sel("اليوم", `${p}.jobs.weekly.day`, j.weekly.day, DAYS.map((d, k) => [k, d]))}
+          ${F.sel("الساعة", `${p}.jobs.weekly.hour`, j.weekly.hour, HOURS)}
+        </div>
+        <p class="hint">كل المواعيد بتوقيت القناة اللي اخترته فوق.</p>
+      </div>
+
+      <div class="sec"><h3>تنبيهات الأسعار</h3>
+        ${F.chk("تنبيه عند حركة سريعة", `${p}.alerts.moves.enabled`, mv.enabled)}
+        <div class="grid2">
+          ${F.num("النسبة %", `${p}.alerts.moves.percent`, mv.percent, 0.1, 100, 0.1)}
+          ${F.num("خلال كم دقيقة", `${p}.alerts.moves.minutes`, mv.minutes, 1, 60)}
+        </div>
+        ${F.num("لا يكرر نفس التنبيه قبل (دقيقة)", `${p}.alerts.moves.cooldown`, mv.cooldown, 1, 1440)}
+        <label>مستويات سعرية (تنبيه مرة وحدة)</label>
+        ${lv}
+        <div class="grid2" data-newlevel="${i}">
+          <input placeholder="BTC" dir="ltr" data-nl="symbol">
+          <input placeholder="السعر" type="number" step="any" dir="ltr" data-nl="price">
+        </div>
+        <div class="actions">
+          <select data-nl="dir" style="width:auto"><option value="above">فوق ▲</option><option value="below">تحت ▼</option></select>
+          <button class="secondary small" data-act="add-level" data-i="${i}">+ إضافة مستوى</button>
+        </div>
+      </div>
+
+      <div class="sec"><h3>أدوات</h3>
+        <div class="actions">
+          <select data-role="job" style="width:auto">${Object.entries(JOB_LABEL).filter(([k]) => k !== "alert")
+            .map(([k, t]) => `<option value="${k}">${t}</option>`).join("")}</select>
+          <button data-act="publish" data-i="${i}">نشر الآن</button>
+          <button class="secondary" data-act="preview" data-i="${i}">معاينة</button>
+          <button class="secondary" data-act="test" data-i="${i}">تجربة اتصال</button>
+          <button class="danger" data-act="remove" data-i="${i}">حذف القناة</button>
+        </div>
+      </div>
+    </div>
+  </details>`;
+}
+
+// ---------- العرض ----------
+function renderChannels() {
+  $("channels").innerHTML = cfg.channels.map(channelCard).join("") ||
+    `<div class="panel muted">ما أكو قنوات. اضغط "إضافة قناة جديدة".</div>`;
+}
+function renderGeneral() {
+  $("paused").checked = cfg.paused;
+  $("adminChatId").value = cfg.adminChatId || "";
+}
+function renderStatus() {
+  const s = status;
+  let sys;
+  if (s.paused) sys = `<b>⏸ النشر متوقف مؤقتاً</b> (من تبويب عام)`;
+  else if (s.lastTickAt && Date.now() - s.lastTickAt < 150000) sys = `<b class="okc">✅ الجدولة شغالة</b> · آخر دورة ${ago(s.lastTickAt)}`;
+  else sys = `<b>🟡 الجدولة تعمل بالكرون كل دقيقة</b> · الحالة تتحدث عند أول دورة بعد فتح اللوحة`;
+  const b = s.binance || {};
+  let bl = "";
+  if (b.lastOkAt && (!b.lastFailAt || b.lastOkAt >= b.lastFailAt)) {
+    bl = `<div class="muted" dir="ltr" style="text-align:left">Binance ✅ ${ago(b.lastOkAt)} · ${esc(b.lastOkBase)}</div>`;
+  } else if (b.lastFailAt) {
+    bl = `<div class="err" dir="ltr" style="text-align:left">Binance ❌ ${ago(b.lastFailAt)} · ${esc(b.lastFail)}</div>` +
+         `<div class="muted">افحص الروابط من تبويب «الاتصال»</div>`;
+  }
+  $("sysline").innerHTML = sys + bl;
+
+  $("statusChannels").innerHTML = s.channels.map(c => `
+    <div class="panel"><h2>${esc(c.name)} <span class="badge ${c.enabled ? "ok" : "off"}">${c.enabled ? "فعّالة" : "معطلة"}</span></h2>
+      ${c.jobs.filter(j => j.enabled).map(j => `
+        <div class="row"><span class="grow">${JOB_LABEL[j.job]}</span>
+          <span class="muted">${j.last ? `آخر نشر ${ago(j.last.t)} (#${j.last.id})` : "لسه ما نشر"}</span>
+          <span class="muted">· القادم ${inn(j.next)}</span></div>`).join("") || `<p class="muted">كل المهام معطلة.</p>`}
+    </div>`).join("");
+
+  $("logs").innerHTML = logs.slice(0, 30).map(l => `
+    <div class="row"><span>${l.ok ? "✅" : "❌"}</span>
+      <span class="grow">${esc(l.name)} · ${JOB_LABEL[l.job] || l.job}${l.manual ? " (يدوي)" : ""}
+        ${l.ok ? `<span class="muted"> #${l.id}</span>` : `<div class="err" dir="ltr" style="text-align:left">${esc(l.err)}${l.n > 1 ? ` ×${l.n}` : ""}</div><div class="muted">${esc(hint(l.err))}</div>`}</span>
+      <span class="muted">${ago(l.t)}</span></div>`).join("") || `<p class="muted">لسه ما أكو عمليات.</p>`;
+}
+function renderConnection() {
+  const eps = cfg.settings.endpoints;
+  $("endpoints").innerHTML = eps.map((e, i) => `
+    <div class="ep">
+      <input type="checkbox" data-ep="toggle" data-i="${i}" ${e.enabled ? "checked" : ""}>
+      <span class="url ${e.enabled ? "" : "off"}">${esc(e.url)}</span>
+      <button class="secondary" data-ep="up" data-i="${i}" ${i === 0 ? "disabled" : ""}>↑</button>
+      <button class="secondary" data-ep="down" data-i="${i}" ${i === eps.length - 1 ? "disabled" : ""}>↓</button>
+      <button class="danger" data-ep="del" data-i="${i}">✕</button>
+    </div>`).join("");
+  $("timeoutMs").value = cfg.settings.timeoutMs;
+
+  const t = secrets || { source: "none" };
+  $("tokenState").innerHTML = t.source === "dashboard"
+    ? `التوكن الحالي: <b dir="ltr">${esc(t.masked)}</b> (محفوظ من اللوحة)`
+    : t.source === "env" ? "يُستعمل التوكن من Cloudflare Secrets." : `<span class="err">ما أكو توكن مضبوط.</span>`;
+}
+function renderAll() { renderChannels(); renderConnection(); renderGeneral(); renderStatus(); clean(); }
+
+// ---------- أحداث ----------
+function onField(e) {
+  const el = e.target;
+  const path = el.dataset.path;
+  if (!path || !cfg) return;
+  const t = el.dataset.type;
+  let v;
+  if (t === "bool") v = el.checked;
+  else if (t === "num") v = Number(el.value);
+  else if (t === "symbols") v = el.value.split(/[\n,،\s]+/).filter(Boolean);
+  else v = el.value;
+  setPath(cfg, path, v);
+  markDirty();
+}
+$("channels").addEventListener("input", onField);
+$("channels").addEventListener("change", onField);
+$("paused").addEventListener("change", () => { cfg.paused = $("paused").checked; markDirty(); });
+$("adminChatId").addEventListener("input", () => { cfg.adminChatId = $("adminChatId").value.trim(); markDirty(); });
+
+document.querySelector(".tabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-tab]");
+  if (!b) return;
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
+  ["status", "channels", "connection", "general"].forEach(t => { $("tab-" + t).hidden = t !== b.dataset.tab; });
+  if (b.dataset.tab === "status") refreshStatus();
+});
+
+$("channels").addEventListener("toggle", e => {
+  const d = e.target;
+  if (d.matches && d.matches("details.card")) d.open ? openIds.add(d.dataset.id) : openIds.delete(d.dataset.id);
+}, true);
+
+function previewHtml(text) {
+  const dec = s => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  return text.split(/(<\/?b>)/).map(p => /^<\/?b>$/.test(p) ? p : esc(dec(p))).join("");
+}
+
+async function saveConfig() {
   try {
-    const body = readForm();
-    if (current === "new") {
-      if (!body.name) body.name = body.title || "قناة جديدة";
-      if (!body.title) body.title = body.name;
-      const d = await api("/api/channels", { method: "POST", body: JSON.stringify(body) });
-      let msg = "تمت إضافة القناة.";
-      if ($("f_start").checked) {
-        try { await api(`/api/channels/${d.channel.id}/publish`, { method: "POST", body: JSON.stringify({ job: "price" }) }); msg += " ونُشر أول منشور."; }
-        catch (e) { msg += " لكن النشر الأول فشل: " + errText(e); }
-      }
-      await load(); openEditor(d.channel.id); notice(msg);
-    } else {
-      await api("/api/channels/" + current, { method: "PUT", body: JSON.stringify(body) });
-      await load(); openEditor(current); notice("تم الحفظ. التغيير يسري من الدقيقة القادمة.");
-    }
-  } catch (e) { notice(errText(e), "err"); }
-  finally { btn.disabled = false; }
-};
+    const d = await api("/api/config", "POST", { config: cfg });
+    cfg = d.config;
+    renderAll();
+    const s = await api("/api/state"); status = s.status; logs = s.logs; secrets = s.secrets; renderStatus();
+    notice("تم الحفظ. التغييرات تطبق من الدقيقة القادمة.");
+    return true;
+  } catch (e) { notice(e.message, "err"); return false; }
+}
 
-$("testBtn").onclick = async () => {
-  try {
-    if (current === "new") {
-      notice("احفظ القناة أولاً ثم افحص الاتصال.", "err"); return;
-    }
-    const d = await api(`/api/channels/${current}/test`, { method: "POST", body: "{}" });
-    notice(d.can_post ? `الاتصال سليم ✅ البوت @${d.bot} يستطيع النشر في «${d.chat_title}».`
-      : `البوت @${d.bot} موجود في «${d.chat_title}» لكن ليس Admin بصلاحية النشر (${d.status}).`, d.can_post ? "ok" : "err");
-  } catch (e) { notice(errText(e), "err"); }
-};
+$("channels").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const act = b.dataset.act, i = Number(b.dataset.i), ch = cfg.channels[i];
 
-document.querySelectorAll(".pub").forEach(b => b.onclick = async () => {
+  if (act === "add-level") {
+    const box = b.closest(".sec");
+    const sym = box.querySelector('[data-nl="symbol"]').value.trim();
+    const price = Number(box.querySelector('[data-nl="price"]').value);
+    const dir = box.querySelector('[data-nl="dir"]').value;
+    if (!sym || !(price > 0)) return notice("اكتب العملة والسعر.", "err");
+    ch.alerts.levels.push({ id: "lv_" + Math.random().toString(36).slice(2, 8), symbol: sym, dir, price, triggered: false });
+    openIds.add(ch.id); markDirty(); renderChannels(); return;
+  }
+  if (act === "del-level") { ch.alerts.levels.splice(Number(b.dataset.j), 1); markDirty(); renderChannels(); return; }
+  if (act === "rearm") { ch.alerts.levels[Number(b.dataset.j)].triggered = false; markDirty(); renderChannels(); return; }
+  if (act === "remove") {
+    if (!confirm(`حذف القناة "${ch.name}"؟`)) return;
+    cfg.channels.splice(i, 1); markDirty(); renderChannels(); return;
+  }
+
+  // أوامر تعمل على الإعدادات المحفوظة: نحفظ أولاً
   b.disabled = true;
   try {
-    const d = await api(`/api/channels/${current}/publish`, { method: "POST", body: JSON.stringify({ job: b.dataset.job }) });
-    notice(`تم النشر ✅ رقم المنشور ${d.message_id || "—"}`);
-    await load();
-  } catch (e) { notice(errText(e), "err"); }
+    if (dirty && !(await saveConfig())) return;
+    const id = cfg.channels[i].id;
+    const job = b.closest(".sec").querySelector('[data-role="job"]')?.value;
+    if (act === "publish") {
+      const d = await api("/api/publish", "POST", { channelId: id, job });
+      notice(`تم النشر (#${d.message_id}).`);
+    } else if (act === "preview") {
+      const d = await api("/api/preview", "POST", { channelId: id, job });
+      $("modalBody").innerHTML = d.messages.map(previewHtml).join("\n\n— — —\n\n");
+      $("modal").hidden = false;
+    } else if (act === "test") {
+      const d = await api("/api/test", "POST", { channelId: id });
+      notice(`وصلت رسالة التجربة (#${d.message_id}). الربط سليم.`);
+    }
+  } catch (err) { notice(err.message + hint(err.message), "err"); }
   finally { b.disabled = false; }
 });
 
-$("deleteBtn").onclick = async () => {
-  if (!confirm("حذف هذه القناة من اللوحة؟ (لا يحذف القناة نفسها من تيليغرام)")) return;
-  try {
-    await api("/api/channels/" + current, { method: "DELETE" });
-    current = null; $("editor").hidden = true; await load(); notice("تم الحذف.");
-  } catch (e) { notice(errText(e), "err"); }
-};
+$("addChannel").addEventListener("click", () => {
+  const id = "ch_" + Math.random().toString(36).slice(2, 8);
+  cfg.channels.push({
+    id, name: "قناة جديدة", enabled: true, chatId: "", channelUrl: "", buttonText: "",
+    title: "CRYPTO MARKET", symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"], tzOffset: 3,
+    showHighLow: true, showVolume: true, technicals: false,
+    jobs: { price: { enabled: true, everyMinutes: 5 }, hourly: { enabled: true }, four_hour: { enabled: true },
+      daily: { enabled: false, hour: 0 }, weekly: { enabled: false, day: 5, hour: 0 } },
+    alerts: { moves: { enabled: false, percent: 3, minutes: 15, cooldown: 60 }, levels: [] }
+  });
+  openIds.add(id); markDirty(); renderChannels();
+  document.querySelector('[data-id="' + id + '"]').scrollIntoView({ behavior: "smooth" });
+});
 
-buildPresets();
-try {
-  $("workerUrl").value = localStorage.getItem("workerUrl") || "";
-  const k = localStorage.getItem("adminKey"); if (k) { $("adminKey").value = k; $("remember").checked = true; }
-} catch (e) {}
+$("saveBtn").addEventListener("click", async () => { $("saveBtn").disabled = true; if (!(await saveConfig())) markDirty(); });
+$("connectBtn").addEventListener("click", connect);
+$("modalClose").addEventListener("click", () => { $("modal").hidden = true; });
+window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+// ---------- الاتصال ----------
+$("endpoints").addEventListener("click", e => {
+  const b = e.target.closest("button[data-ep]");
+  if (!b) return;
+  const i = Number(b.dataset.i), eps = cfg.settings.endpoints;
+  if (b.dataset.ep === "del") eps.splice(i, 1);
+  else if (b.dataset.ep === "up" && i > 0) [eps[i - 1], eps[i]] = [eps[i], eps[i - 1]];
+  else if (b.dataset.ep === "down" && i < eps.length - 1) [eps[i + 1], eps[i]] = [eps[i], eps[i + 1]];
+  markDirty(); renderConnection();
+});
+$("endpoints").addEventListener("change", e => {
+  const el = e.target.closest("input[data-ep=toggle]");
+  if (!el) return;
+  cfg.settings.endpoints[Number(el.dataset.i)].enabled = el.checked;
+  markDirty(); renderConnection();
+});
+$("addEndpoint").addEventListener("click", () => {
+  const v = $("newEndpoint").value.trim().replace(/\/+$/, "");
+  if (!/^https:\/\/\S+$/.test(v)) return notice("الرابط لازم يبدأ بـ https://", "err");
+  if (cfg.settings.endpoints.some(x => x.url === v)) return notice("الرابط موجود.", "err");
+  cfg.settings.endpoints.unshift({ url: v, enabled: true });
+  $("newEndpoint").value = "";
+  markDirty(); renderConnection();
+});
+$("timeoutMs").addEventListener("input", () => { cfg.settings.timeoutMs = Number($("timeoutMs").value); markDirty(); });
+$("defaultsBtn").addEventListener("click", () => {
+  if (!confirm("استرجاع قائمة الروابط الافتراضية؟")) return;
+  cfg.settings.endpoints = ["https://data-api.binance.vision", "https://api.binance.com", "https://api-gcp.binance.com",
+    "https://api1.binance.com", "https://api2.binance.com", "https://api3.binance.com", "https://api4.binance.com"]
+    .map(url => ({ url, enabled: true }));
+  markDirty(); renderConnection();
+});
+$("diagBtn").addEventListener("click", async () => {
+  const b = $("diagBtn"); b.disabled = true; b.textContent = "جاري الفحص...";
+  try {
+    // الفحص على الروابط المحفوظة: نحفظ أول إذا في تغييرات
+    if (dirty && !(await saveConfig())) return;
+    const d = await api("/api/diagnose", "POST", {});
+    const okAny = d.results.some(r => r.ok);
+    const geo = d.results.some(r => r.status === 451 || r.status === 403);
+    $("diagOut").innerHTML = `<div class="diag">` + d.results.map(r => `
+      <div class="row"><span>${r.ok ? "✅" : "❌"}</span>
+        <span class="u">${esc(r.url)}</span>
+        <span class="${r.ok ? "okc" : "err"}" dir="ltr">${r.ok ? "OK" : esc(r.error || "HTTP " + r.status)}</span>
+        <span class="muted">${r.ms}ms</span></div>`).join("") +
+      (okAny ? `<p class="okc">فيه رابط شغال. البوت راح يستعمله تلقائياً.</p>`
+        : geo ? `<p class="err">كل الروابط محجوبة (451/403): Binance تحجب منطقة سيرفر Cloudflare. أضف رابط وسيط (Proxy) بالأعلى.</p>`
+        : `<p class="err">ما اتصل ولا رابط. جرب تعيد الفحص بعد دقائق أو زيد المهلة.</p>`) + `</div>`;
+  } catch (e) { notice(e.message, "err"); }
+  finally { b.disabled = false; b.textContent = "فحص كل الروابط"; }
+});
+
+$("tokenSave").addEventListener("click", async () => {
+  const v = $("tokenInput").value.trim();
+  if (!v) return notice("الصق التوكن أولاً.", "err");
+  $("tokenSave").disabled = true;
+  try {
+    const d = await api("/api/secret", "POST", { telegramToken: v });
+    secrets = d.secrets; $("tokenInput").value = ""; renderConnection();
+    notice(`تم التحقق والحفظ${d.bot ? " (@" + d.bot + ")" : ""}.`);
+  } catch (e) { notice(e.message, "err"); }
+  finally { $("tokenSave").disabled = false; }
+});
+$("tokenClear").addEventListener("click", async () => {
+  if (!confirm("حذف التوكن المحفوظ من اللوحة؟ (يرجع لتوكن Cloudflare إن وجد)")) return;
+  try {
+    const d = await api("/api/secret", "POST", { telegramToken: "" });
+    secrets = d.secrets; renderConnection(); notice("تم الحذف.");
+  } catch (e) { notice(e.message, "err"); }
+});
+
+loadCreds();
+if ($("workerUrl").value && $("adminKey").value) connect();
