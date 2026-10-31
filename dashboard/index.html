@@ -11,94 +11,86 @@
 <main class="wrap">
   <header class="top">
     <div class="mark">₿</div>
-    <div><h1>CRYPTO MARKET</h1><p>لوحة إدارة القنوات والمنشورات</p></div>
+    <div><h1>CRYPTO MARKET</h1><p>لوحة إدارة القنوات والأسعار</p></div>
     <span class="live">BINANCE SPOT</span>
   </header>
 
-  <section id="login" class="panel">
+  <section class="panel">
     <h2>الاتصال بالبوت</h2>
     <label>رابط Cloudflare Worker</label>
     <input id="workerUrl" placeholder="https://crypto-market-bot.اسمك.workers.dev" dir="ltr">
     <label>مفتاح لوحة التحكم ADMIN_KEY</label>
-    <input id="adminKey" type="password" dir="ltr" placeholder="ADMIN_KEY">
-    <label class="check"><input id="remember" type="checkbox" checked> تذكّر على هذا الجهاز</label>
-    <div class="actions"><button id="connectBtn">دخول</button></div>
-    <p class="hint">لا تضع Telegram Bot Token هنا. التوكن يبقى بـ Cloudflare Secrets فقط.</p>
+    <input id="adminKey" type="password" placeholder="ADMIN_KEY" dir="ltr">
+    <label class="check"><input id="remember" type="checkbox"> تذكّر المفتاح على هذا الجهاز</label>
+    <button id="loadBtn" class="secondary">تحميل القنوات</button>
+    <p class="hint">توكن تيليغرام يبقى داخل Cloudflare Secrets فقط. نفس البوت يخدم كل القنوات؛ أضفه Admin في كل قناة.</p>
   </section>
 
-  <div id="app" hidden>
-    <nav class="tabs">
-      <button data-tab="status" class="on">الحالة</button>
-      <button data-tab="channels">القنوات</button>
-      <button data-tab="connection">الاتصال</button>
-      <button data-tab="general">عام</button>
-    </nav>
+  <section class="panel">
+    <div class="row"><h2>القنوات</h2><button id="newBtn" class="small">+ قناة جديدة</button></div>
+    <div id="channels" class="cards"><p class="hint">اضغط «تحميل القنوات».</p></div>
+  </section>
 
-    <section id="tab-status">
-      <div id="sysline" class="panel"></div>
-      <div id="statusChannels"></div>
-      <div class="panel"><h2>آخر العمليات</h2><div id="logs"></div></div>
-    </section>
+  <section class="panel" id="editor" hidden>
+    <h2 id="editorTitle">قناة</h2>
 
-    <section id="tab-channels" hidden>
-      <div id="channels"></div>
-      <button id="addChannel" class="secondary wide">+ إضافة قناة جديدة</button>
-    </section>
+    <label>اسم داخلي للقناة (يظهر لك فقط)</label>
+    <input id="f_name" maxlength="40">
+    <label>معرّف القناة في تيليغرام (@username أو -100...)</label>
+    <input id="f_chatId" dir="ltr" placeholder="@my_channel">
+    <p class="hint" id="chatHint">للقناة الرئيسية: اتركه فارغاً ليستخدم TELEGRAM_CHAT_ID من الأسرار.</p>
+    <label>عنوان المنشور</label>
+    <input id="f_title" maxlength="50">
+    <label>رابط القناة (للزر تحت المنشور، اتركه فارغاً لإخفاء الزر)</label>
+    <input id="f_url" dir="ltr" placeholder="https://t.me/...">
+    <label>نص الزر (اختياري)</label>
+    <input id="f_btn" maxlength="60" placeholder="📢 JOIN ...">
 
-    <section id="tab-connection" hidden>
-      <div class="panel">
-        <h2>روابط Binance</h2>
-        <p class="hint" style="margin:0 0 8px">البوت يجرب الروابط بالترتيب، وإذا نجح رابط يبدأ به المرة الجاية. إذا كل الروابط تفشل بـ HTTP 451 أو 403 فهذا حظر منطقة، وحله رابط وسيط (Proxy) تضيفه هنا.</p>
-        <div id="endpoints"></div>
-        <div class="actions">
-          <input id="newEndpoint" dir="ltr" placeholder="https://my-proxy.example.com" style="flex:1;min-width:200px">
-          <button id="addEndpoint" class="secondary small">+ إضافة</button>
-        </div>
-        <label>مهلة كل رابط (ملّي ثانية)</label>
-        <input id="timeoutMs" type="number" min="2000" max="30000" step="500" dir="ltr">
-        <div class="actions">
-          <button id="diagBtn">فحص كل الروابط</button>
-          <button id="defaultsBtn" class="secondary">استرجاع الروابط الافتراضية</button>
-        </div>
-        <div id="diagOut"></div>
-      </div>
+    <label>العملات (زوج بكل سطر)</label>
+    <textarea id="f_symbols" rows="8" dir="ltr" spellcheck="false"></textarea>
+    <div id="presets" class="chips"></div>
+    <p class="hint">أي زوج غير موجود في Binance يُتجاهل تلقائياً ولا يعطّل النشر.</p>
 
-      <div class="panel">
-        <h2>توكن بوت تيليغرام</h2>
-        <div id="tokenState" class="muted"></div>
-        <label>توكن جديد (من BotFather)</label>
-        <input id="tokenInput" type="password" dir="ltr" placeholder="123456789:AA..." autocomplete="off">
-        <div class="actions">
-          <button id="tokenSave">تحقق وحفظ</button>
-          <button id="tokenClear" class="danger">حذف التوكن المحفوظ</button>
-        </div>
-        <p class="hint">يُحفظ داخل الـ Worker نفسه ولا يرجع للوحة أبداً (يظهر مخفي). إذا ما حفظت شي هنا يُستعمل TELEGRAM_BOT_TOKEN من Cloudflare.</p>
-      </div>
-    </section>
+    <h3>المهام</h3>
+    <div class="task"><label class="check"><input id="f_price" type="checkbox"> أسعار مباشرة</label>
+      <select id="f_every"><option value="1">كل دقيقة</option><option value="2">كل 2 دقيقة</option><option value="5">كل 5 دقائق</option><option value="10">كل 10 دقائق</option><option value="15">كل 15 دقيقة</option><option value="30">كل 30 دقيقة</option><option value="60">كل ساعة</option></select></div>
+    <div class="task"><label class="check"><input id="f_hourly" type="checkbox"> تحليل كل ساعة</label></div>
+    <div class="task"><label class="check"><input id="f_four" type="checkbox"> تقرير كل 4 ساعات</label></div>
+    <div class="task"><label class="check"><input id="f_daily" type="checkbox"> ملخص يومي</label>
+      <span class="inl">الساعة <input id="f_dailyHour" type="number" min="0" max="23" class="mini"> بتوقيت القناة</span></div>
+    <div class="task"><label class="check"><input id="f_alerts" type="checkbox"> تنبيه حركة قوية</label>
+      <span class="inl">≥ <input id="f_thr" type="number" min="0.5" max="50" step="0.5" class="mini">%
+      خلال <select id="f_win" class="mini"><option value="5m">5د</option><option value="15m">15د</option><option value="30m">30د</option><option value="1h">1س</option></select>
+      · تهدئة <select id="f_cool" class="mini"><option value="30">30د</option><option value="60">60د</option><option value="180">3س</option><option value="720">12س</option></select></span></div>
 
-    <section id="tab-general" hidden>
-      <div class="panel">
-        <h2>إعدادات عامة</h2>
-        <label class="check"><input id="paused" type="checkbox"> إيقاف كل النشر مؤقتاً</label>
-        <label>Chat ID الخاص بك لتنبيهات الأعطال (اختياري)</label>
-        <input id="adminChatId" dir="ltr" placeholder="مثال: 123456789">
-        <p class="hint">إذا فشل نشر قناة يوصلك تنبيه على تيليغرام (مرة كل 30 دقيقة كحد أقصى لكل مشكلة). لازم تكون سويت Start للبوت من حسابك.</p>
-      </div>
-    </section>
-
-    <div class="savebar">
-      <span id="dirty"></span>
-      <button id="saveBtn" disabled>حفظ التغييرات</button>
+    <h3>التنسيق</h3>
+    <div class="checks">
+      <label class="check"><input id="f_hl" type="checkbox"> أعلى وأدنى سعر 24 ساعة</label>
+      <label class="check"><input id="f_vol" type="checkbox"> حجم التداول</label>
+      <label class="check"><input id="f_enabled" type="checkbox"> القناة مفعّلة (إيقاف مؤقت بدون حذف)</label>
     </div>
-  </div>
+    <label>فرق التوقيت عن UTC (العراق = 3)</label>
+    <input id="f_tz" type="number" min="-12" max="14" dir="ltr">
+
+    <label class="check" id="startRow"><input id="f_start" type="checkbox" checked> نشر أول منشور فوراً بعد الحفظ</label>
+
+    <div class="actions">
+      <button id="saveBtn">حفظ</button>
+      <button id="testBtn" class="secondary">فحص الاتصال</button>
+      <button id="deleteBtn" class="danger">حذف</button>
+    </div>
+    <div class="actions pubs">
+      <span class="hint">نشر الآن:</span>
+      <button class="secondary small pub" data-job="price">أسعار</button>
+      <button class="secondary small pub" data-job="hourly">ساعة</button>
+      <button class="secondary small pub" data-job="four_hour">4 ساعات</button>
+      <button class="secondary small pub" data-job="daily">يومي</button>
+    </div>
+  </section>
 
   <div id="notice" role="status"></div>
-  <footer>الأسعار من Binance Public Spot Market Data · الجدولة داخل Durable Object</footer>
+  <footer>الأسعار من Binance Public Spot Market Data · الجدولة من الكود (كرون واحد كل دقيقة)</footer>
 </main>
-
-<div id="modal" hidden>
-  <div class="sheet"><pre id="modalBody"></pre><button id="modalClose" class="secondary wide">إغلاق</button></div>
-</div>
 <script src="app.js"></script>
 </body>
 </html>
