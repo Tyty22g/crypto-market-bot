@@ -1,64 +1,28 @@
-# Crypto Market Bot (Binance Spot → Telegram)
+# Crypto Market Bot v2 (Binance Spot → Telegram)
 
-مشروع Worker مجدول كل دقيقة + لوحة Pages لإدارة الأزواج.
+نظام متعدد القنوات. كل قناة لها عملاتها ومواعيدها وتنبيهاتها، وكلها تُدار من لوحة Pages.
 
-## المكونات
-- Binance Public Market Data: `https://data-api.binance.vision/api/v3/ticker/24hr`
-- Cloudflare Worker + Cron Trigger `* * * * *`
-- Cloudflare KV لتخزين الإعدادات ورقم منشور Telegram
-- Cloudflare Pages لاستضافة `dashboard/`
-- Telegram Bot API: ينشئ أول منشور ثم يعدّل نفس المنشور
+## كيف يشتغل
+- **Durable Object (`Scheduler`)** يحمل الجدولة والحالة، ومنبّه (Alarm) يشغّله كل دقيقة بدقة.
+- **الكرون `* * * * *`** حارس فقط: يتأكد أن المنبّه شغال وينفّذ أي موعد فائت (بدون تكرار).
+- لا كتابات على KV. KV يُقرأ مرة وحدة فقط لنقل إعداداتك القديمة.
+- طلب واحد لـ Binance لكل نوع بيانات لكل القنوات (حتى 100 زوج/طلب).
 
-## 1) إنشاء KV
-من Cloudflare Dashboard:
-Workers & Pages → KV → Create namespace
-سمّه `CRYPTO_CONFIG` وانسخ Namespace ID.
+## الإعداد (مرة وحدة)
+Secrets في Worker:
+- `TELEGRAM_BOT_TOKEN`
+- `ADMIN_KEY`
+- `TELEGRAM_CHAT_ID` (اختياري: يُستعمل فقط لتعبئة أول قناة عند الترحيل)
 
-افتح `wrangler.toml` واستبدل:
-`PASTE_YOUR_KV_NAMESPACE_ID_HERE`
-بالمعرّف الحقيقي.
+## إضافة قناة
+1. أضف البوت أدمن بالقناة (صلاحية Post Messages).
+2. من اللوحة ← القنوات ← إضافة قناة. اكتب `@username` أو رقم `-100...` للقنوات الخاصة.
+3. اضغط **تجربة اتصال** ثم **حفظ**. تبدأ الأسعار فوراً، والتقارير في مواعيدها.
 
-## 2) إعداد أسرار Worker
-في Worker → Settings → Variables and Secrets أضف Secrets:
-- `TELEGRAM_BOT_TOKEN` = توكن البوت من BotFather
-- `TELEGRAM_CHAT_ID` = `@YourChannelUsername` للقناة العامة، أو رقم chat id للقناة الخاصة
-- `ADMIN_KEY` = كلمة طويلة عشوائية خاصة بلوحة التحكم
+## الأنواع
+أسعار (كل N دقيقة) · تحليل ساعة · تقرير 4 ساعات (+RSI/MA اختياري) · يومي · أسبوعي · تنبيه حركة سريعة · تنبيه مستوى سعر.
+المواعيد بتوقيت القناة (فرق التوقيت يُختار من اللوحة).
 
-أضف البوت إلى القناة واجعله Admin مع صلاحية Post Messages.
-
-## 3) نشر Worker
-ارفع المشروع إلى GitHub.
-أنشئ Worker واربطه بالمستودع من Workers & Pages / Workers Builds، واجعل إعداد البناء يستخدم `wrangler.toml` في جذر المستودع.
-أو انشر محلياً باستخدام Wrangler:
-```bash
-npx wrangler deploy
-```
-يجب أن تكون KV namespace ID والأسرار مضبوطة قبل النشر.
-بعد النشر تأكد أن Cron Trigger ظاهر بقيمة `* * * * *`.
-
-## 4) نشر لوحة Pages
-أنشئ Pages project واربطه بنفس GitHub repository.
-- Framework preset: None
-- Build command: اتركه فارغاً
-- Build output directory: `dashboard`
-
-بعد النشر افتح رابط Pages.
-
-## 5) تشغيل البوت أول مرة
-في لوحة Pages:
-1. أدخل رابط Worker مثل `https://crypto-market-bot.username.workers.dev`
-2. أدخل نفس قيمة `ADMIN_KEY`
-3. اضغط تحميل الإعدادات الحالية أو اكتب أزواج USDT.
-4. اضغط حفظ الإعدادات.
-5. اضغط نشر / تحديث الآن.
-
-بعدها Cron سيحدث نفس منشور القناة كل دقيقة.
-
-## ملاحظات مهمة
-- لا تضع Telegram token في GitHub أو لوحة Pages.
-- Binance public market-data endpoints لا تحتاج API key.
-- الكود يرسل قائمة الأزواج المختارة إلى ticker/24hr ضمن طلب مجمّع واحد (حتى 100 زوج في الإعداد الحالي)، بدلاً من جلب كل السوق.
-- رسالة Telegram الواحدة لها حد طول؛ الكود يرفض الرسالة إذا تجاوزت 3900 حرف. لذلك لا يمكن عرض عدد غير محدود في منشور واحد. قلّل الأزواج أو عطّل تفاصيل الحجم والأعلى/الأدنى إذا وصلت للحد.
-- الكود الحالي يقبل حتى 100 زوج في الإعدادات، لكن عدد الأزواج الفعلي الذي يتسع في المنشور أقل وقد يختلف حسب طول البيانات.
-- `priceChange` و`priceChangePercent` هنا هما تغير آخر 24 ساعة، وليس التغير منذ آخر تحديث بالدقيقة.
-- بيانات السوق عامة وليست توصية استثمارية.
+## ملاحظات
+- لا تضع Bot Token في GitHub أو اللوحة.
+- مراقبة الأعطال: تبويب الحالة، وتنبيه تيليغرام على chat id الخاص بك (تبويب عام).
