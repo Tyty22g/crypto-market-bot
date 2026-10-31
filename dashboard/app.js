@@ -109,6 +109,12 @@ const F = {
     `<label>${label}<select data-path="${path}" data-type="num">${opts.map(([val, t]) =>
       `<option value="${val}" ${Number(val) === Number(v) ? "selected" : ""}>${t}</option>`).join("")}</select></label>`
 };
+const DEF_TPL = "$" + "{price}";
+const PROV = [["binance", "Binance"], ["bybit", "Bybit"], ["okx", "OKX"], ["kucoin", "KuCoin"],
+  ["bitget", "Bitget"], ["gateio", "Gate.io"], ["mexc", "MEXC"]];
+F.selS = (label, path, v, opts) =>
+  `<label>${label}<select data-path="${path}" data-type="text">${opts.map(([val, t]) =>
+    `<option value="${val}" ${val === v ? "selected" : ""}>${t}</option>`).join("")}</select></label>`;
 const HOURS = Array.from({ length: 24 }, (_, i) => [i, String(i).padStart(2, "0") + ":00"]);
 
 function channelCard(ch, i) {
@@ -130,6 +136,12 @@ function channelCard(ch, i) {
       ${F.text("اسم القناة (للوحة فقط)", `${p}.name`, ch.name)}
       ${F.chk("القناة فعّالة", `${p}.enabled`, ch.enabled)}
       ${F.text("Chat ID أو @username للقناة", `${p}.chatId`, ch.chatId, "@MyChannel أو -100123456789", 'dir="ltr"')}
+      ${F.selS("المنصة (مصدر الأسعار)", `${p}.provider`, ch.provider || "auto",
+        [["auto", "تلقائي (حسب ترتيب المنصات)"], ...PROV])}
+      ${F.selS("شكل المنشور", `${p}.format`, ch.format || "full",
+        [["full", "كامل (أسعار + تقارير)"], ["price_only", "سعر فقط مثل $5677.77666"]])}
+      ${ch.format === "price_only" ? F.text("قالب الرسالة ({price} {symbol} {change})", `${p}.priceTemplate`, ch.priceTemplate || DEF_TPL, "", 'dir="ltr"') +
+        `<p class="hint">ينشر السعر فقط لكل عملة بالقائمة. اضبط «نشر الأسعار» كل 3 دقائق مثلاً. تقارير الساعة والـ4 ساعات تُتجاهل بهذا الشكل.</p>` : ""}
       ${F.text("عنوان المنشور", `${p}.title`, ch.title)}
       ${F.text("رابط القناة (زر الانضمام تحت المنشور)", `${p}.channelUrl`, ch.channelUrl, "https://t.me/...", 'dir="ltr"')}
       ${F.text("نص الزر (اختياري)", `${p}.buttonText`, ch.buttonText, "📢 JOIN ...")}
@@ -244,7 +256,50 @@ function renderConnection() {
     ? `التوكن الحالي: <b dir="ltr">${esc(t.masked)}</b> (محفوظ من اللوحة)`
     : t.source === "env" ? "يُستعمل التوكن من Cloudflare Secrets." : `<span class="err">ما أكو توكن مضبوط.</span>`;
 }
-function renderAll() { renderChannels(); renderConnection(); renderGeneral(); renderStatus(); clean(); }
+function renderProviders() {
+  const st = cfg.settings, names = Object.fromEntries(PROV);
+  const order = st.providerOrder || PROV.map(p => p[0]);
+  $("providers").innerHTML = order.map((id, i) => `
+    <div class="ep" data-pid="${id}">
+      <input type="checkbox" data-pv="enabled" ${st.providers[id]?.enabled !== false ? "checked" : ""}>
+      <b style="min-width:62px">${names[id] || id}</b>
+      ${id === "binance" ? `<span class="url muted">الروابط بالأعلى</span>` :
+        `<input class="url" data-pv="base" dir="ltr" value="${esc(st.providers[id]?.base || "")}" style="flex:1;min-width:0">`}
+      <button class="secondary" data-pv="up" ${i === 0 ? "disabled" : ""}>↑</button>
+      <button class="secondary" data-pv="down" ${i === order.length - 1 ? "disabled" : ""}>↓</button>
+      <button class="secondary" data-pv="test">اختبار</button>
+    </div>
+    <div class="muted" id="pt_${id}" dir="ltr" style="text-align:left;font-size:12px"></div>`).join("");
+  $("failover").checked = st.failover !== false;
+}
+$("providers").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-pv]"); if (!b) return;
+  const id = b.closest("[data-pid]").dataset.pid, st = cfg.settings, o = st.providerOrder, i = o.indexOf(id);
+  if (b.dataset.pv === "up" && i > 0) [o[i - 1], o[i]] = [o[i], o[i - 1]];
+  else if (b.dataset.pv === "down" && i < o.length - 1) [o[i + 1], o[i]] = [o[i], o[i + 1]];
+  else if (b.dataset.pv === "test") {
+    const out = $("pt_" + id); out.textContent = "..."; b.disabled = true;
+    try {
+      if (dirty && !(await saveConfig())) return;
+      const r = await api("/api/ptest", "POST", { id });
+      out.innerHTML = r.ok ? `<span class="okc">✅ ${r.ms}ms</span> ` + r.sample.map(x => `${x.symbol} ${esc(x.price)} (${x.pct}%)`).join(" · ")
+        : `<span class="err">❌ ${esc(r.error)}</span>`;
+    } catch (er) { out.innerHTML = `<span class="err">❌ ${esc(er.message)}</span>`; }
+    finally { b.disabled = false; }
+    return;
+  } else return;
+  markDirty(); renderProviders();
+});
+$("providers").addEventListener("change", e => {
+  const el = e.target.closest("[data-pv]"); if (!el) return;
+  const id = el.closest("[data-pid]").dataset.pid, p = cfg.settings.providers[id] ||= {};
+  if (el.dataset.pv === "enabled") p.enabled = el.checked;
+  else if (el.dataset.pv === "base") p.base = el.value.trim();
+  markDirty();
+});
+$("failover").addEventListener("change", () => { cfg.settings.failover = $("failover").checked; markDirty(); });
+
+function renderAll() { renderChannels(); renderConnection(); renderProviders(); renderGeneral(); renderStatus(); clean(); }
 
 // ---------- أحداث ----------
 function onField(e) {
@@ -259,6 +314,7 @@ function onField(e) {
   else v = el.value;
   setPath(cfg, path, v);
   markDirty();
+  if (path.endsWith(".format")) renderChannels();
 }
 $("channels").addEventListener("input", onField);
 $("channels").addEventListener("change", onField);
@@ -336,11 +392,26 @@ $("channels").addEventListener("click", async e => {
   finally { b.disabled = false; }
 });
 
+$("addPriceChannel").addEventListener("click", () => {
+  const id = "ch_" + Math.random().toString(36).slice(2, 8);
+  cfg.channels.push({
+    id, name: "BTC price", enabled: true, chatId: "", channelUrl: "", buttonText: "",
+    title: "BTC", symbols: ["BTCUSDT"], tzOffset: 3, provider: "auto", format: "price_only", priceTemplate: DEF_TPL,
+    showHighLow: false, showVolume: false, technicals: false,
+    jobs: { price: { enabled: true, everyMinutes: 3 }, hourly: { enabled: false }, four_hour: { enabled: false },
+      daily: { enabled: false, hour: 0 }, weekly: { enabled: false, day: 5, hour: 0 } },
+    alerts: { moves: { enabled: false, percent: 3, minutes: 15, cooldown: 60 }, levels: [] }
+  });
+  openIds.add(id); markDirty(); renderChannels();
+  document.querySelector('[data-id="' + id + '"]').scrollIntoView({ behavior: "smooth" });
+});
+
 $("addChannel").addEventListener("click", () => {
   const id = "ch_" + Math.random().toString(36).slice(2, 8);
   cfg.channels.push({
     id, name: "قناة جديدة", enabled: true, chatId: "", channelUrl: "", buttonText: "",
     title: "CRYPTO MARKET", symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"], tzOffset: 3,
+    provider: "auto", format: "full", priceTemplate: DEF_TPL,
     showHighLow: true, showVolume: true, technicals: false,
     jobs: { price: { enabled: true, everyMinutes: 5 }, hourly: { enabled: true }, four_hour: { enabled: true },
       daily: { enabled: false, hour: 0 }, weekly: { enabled: false, day: 5, hour: 0 } },

@@ -43,6 +43,7 @@
     <section id="tab-channels" hidden>
       <div id="channels"></div>
       <button id="addChannel" class="secondary wide">+ إضافة قناة جديدة</button>
+      <button id="addPriceChannel" class="secondary wide">+ قناة سعر عملة واحدة (مثل $5677.77)</button>
     </section>
 
     <section id="tab-connection" hidden>
@@ -61,6 +62,14 @@
           <button id="defaultsBtn" class="secondary">استرجاع الروابط الافتراضية</button>
         </div>
         <div id="diagOut"></div>
+      </div>
+
+      <div class="panel">
+        <h2>المنصات (مصادر الأسعار)</h2>
+        <p class="hint" style="margin:0 0 8px">الترتيب = أولوية المصدر لما تكون القناة على «تلقائي». إذا فشلت منصة ينتقل البوت للتالية ويبلغك. زر «اختبار» يعرض قراءة BTC الفعلية للتأكد.</p>
+        <div id="providers"></div>
+        <label class="check"><input type="checkbox" id="failover"> الانتقال التلقائي لمنصة ثانية عند الفشل</label>
+        <p class="hint">تقارير الساعة / 4 ساعات / اليومي / الأسبوعي ومؤشرات RSI تعتمد Binance فقط. الأسعار والتنبيهات تشتغل على كل المنصات.</p>
       </div>
 
       <div class="panel">
