@@ -14,17 +14,20 @@ export function channelButton(ch) {
 
 const SEP = "━━━━━━━━━━━━━━━━━━";
 const footer = (ch, now, src = "Binance Spot") =>
-  `${SEP}\n🕒 ${formatTime(now, ch.tzOffset)}`;
+  `${SEP}\n🕒 ${formatTime(now, ch.tzOffset)}\n📡 Source: ${src}`;
 
-function plainPrice(x) {
+function plainPrice(x, group = false) {
   let s = String(x).trim();
   if (/^\d+\.\d+$/.test(s)) s = s.replace(/0+$/, "").replace(/\.$/, "");
   else if (!/^\d+$/.test(s)) {
     const n = Number(s);
     s = Number.isFinite(n) ? n.toFixed(8).replace(/\.?0+$/, "") : s;
   }
-  const [i, f] = s.split(".");
-  return i.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (f ? "." + f : "");
+  if (group && /^\d+(\.\d+)?$/.test(s)) {
+    const [i, f] = s.split(".");
+    s = i.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (f ? "." + f : "");
+  }
+  return s;
 }
 
 // قناة سعر فقط: رسالة قصيرة لكل عملة مثل $5677.77666
@@ -38,7 +41,7 @@ export function buildPriceOnly(ch, map) {
     const arrow = pct > 0 ? "🟢▲" : pct < 0 ? "🔴▼" : "⚪";
     out.push(tpl
       .replaceAll("{arrow}", arrow)
-      .replaceAll("{price}", plainPrice(t.lastPriceRaw ?? t.lastPrice))
+      .replaceAll("{price}", plainPrice(t.lastPriceRaw ?? t.lastPrice, ch.priceGrouping))
       .replaceAll("{symbol}", coinName(s))
       .replaceAll("{change}", signed(Math.round(pct * 100) / 100, "%")));
   }

@@ -1,7 +1,7 @@
 import { json, sleep, slotStart } from "./util.js";
 
 export const BOT_VERSION = "3.2.0";
-import { JOBS, sanitizeConfig, buildInitialConfig, defaultSettings } from "./config.js";
+import { JOBS, sanitizeConfig, buildInitialConfig, defaultSettings, defaultNetwork, sanitizeButtons, CHAT_RE } from "./config.js";
 import { getCloses, rsi, sma, applyBinanceSettings, binanceState, diagnoseEndpoints } from "./binance.js";
 import { fetchData, priceMapAny, testProvider, applyProviderSettings, defaultProviderSettings, PROVIDERS } from "./providers.js";
 import { sendMessage, sendPlain, telegramCall } from "./telegram.js";
@@ -151,6 +151,8 @@ export class Engine {
 
       case "secret": return this.saveToken(body.telegramToken);
       case "ptest": return testProvider(String(body.id || ""));
+      case "network": return this.publishNetwork();
+      case "post": return this.publishPost(body);
 
       case "publish": return this.publishNow(body.channelId, body.job);
       case "preview": return this.previewNow(body.channelId, body.job);
@@ -375,6 +377,125 @@ export class Engine {
 
     if (logs.length > 150) logs.length = 150;
     if (ok) (this.s.last[ch.id] ||= {})[job] = { t: now, id };
+  }
+
+  // منشور حر من اللوحة: نص + أزرار، مثبت أو لا، لقناة معينة أو للكل
+  async publishPost(body) {
+    const text = String(body.text ?? "").trim();
+    if (!text) throw new Error("اكتب نص المنشور أولاً");
+    if (text.length > 3500) throw new Error("النص طويل (الحد 3500 حرف)");
+
+    const buttons = sanitizeButtons(body.buttons);
+    const perRow = [1, 2, 3].includes(Number(body.perRow)) ? Number(body.perRow) : 2;
+    const all = this.s.config.channels;
+    const want = new Set(Array.isArray(body.channelIds) ? body.channelIds : []);
+    const targets = body.all ? [...all] : all.filter(c => want.has(c.id));
+
+    // قنوات إضافية غير مضافة باللوحة (البوت لازم أدمن فيها)
+    const extra = [...new Set((Array.isArray(body.extra) ? body.extra : [])
+      .map(x => String(x).trim()).filter(Boolean))].slice(0, 30);
+    for (const chat of extra) {
+      if (!CHAT_RE.test(chat)) throw new Error(`معرّف غير صالح: ${chat} (استعمل @username أو رقم يبدأ بـ -100)`);
+      if (!targets.some(c => c.chatId === chat)) targets.push({ id: "x:" + chat, name: chat, chatId: chat });
+    }
+    if (!targets.length) throw new Error("اختر قناة واحدة على الأقل");
+
+    const rows = [];
+    for (let i = 0; i < buttons.length; i += perRow) rows.push(buttons.slice(i, i + perRow));
+    const env = this.tgEnv();
+    const results = [];
+
+    for (const ch of targets) {
+      const base = { name: ch.name };
+      try {
+        const payload = {
+          chat_id: ch.chatId, text: escapeHtml(text), parse_mode: "HTML",
+          disable_web_page_preview: true, disable_notification: Boolean(body.silent)
+        };
+        if (rows.length) payload.reply_markup = { inline_keyboard: rows };
+        const m = await telegramCall(env, "sendMessage", payload);
+
+        if (body.pin) {
+          try {
+            await telegramCall(env, "pinChatMessage", { chat_id: ch.chatId, message_id: m.message_id, disable_notification: true });
+            results.push({ ...base, ok: true, action: "posted and pinned" });
+          } catch (e) {
+            results.push({ ...base, ok: true, warn: true, action: "posted, but pin failed: " + e.message.replace(/^TELEGRAM_HTTP_\d+: /, "") });
+          }
+        } else {
+          results.push({ ...base, ok: true, action: "posted" });
+        }
+      } catch (e) {
+        results.push({ ...base, ok: false, error: e.message.replace(/^TELEGRAM_HTTP_\d+: /, "") });
+      }
+      await sleep(500);
+    }
+
+    await this.adminNote("post", `📣 <b>Post published</b>\nDone: ${results.filter(r => r.ok).length}/${results.length} channels${body.pin ? " (pinned)" : ""}`, 0);
+    return { results };
+  }
+
+  // منشور الشبكة: ينشر ويثبّت بالقنوات المختارة، وإذا موجود مسبقاً يعدّله بدل ما يكرره
+  async publishNetwork() {
+    const net = this.s.config.network || defaultNetwork();
+    if (!net.text.trim()) throw new Error("اكتب نص المنشور أولاً");
+    const targets = this.s.config.channels.filter(c => net.channelIds.includes(c.id));
+    if (!targets.length) throw new Error("اختر قناة واحدة على الأقل");
+
+    const rows = [];
+    for (let i = 0; i < net.buttons.length; i += net.perRow) {
+      rows.push(net.buttons.slice(i, i + net.perRow).map(b => ({ text: b.text, url: b.url })));
+    }
+    const markup = { inline_keyboard: rows };
+    const text = escapeHtml(net.text);
+    const env = this.tgEnv();
+    const kv = this.env.CONFIG;
+    const ids = (await kv.get("bot_network", "json")) || {};
+    const results = [];
+
+    for (const ch of targets) {
+      const base = { name: ch.name };
+      try {
+        let mid = ids[ch.id];
+        let done = false;
+
+        if (mid) {
+          try {
+            await telegramCall(env, "editMessageText", {
+              chat_id: ch.chatId, message_id: mid, text, parse_mode: "HTML",
+              disable_web_page_preview: true, reply_markup: markup
+            });
+            results.push({ ...base, ok: true, action: "updated" });
+            done = true;
+          } catch (e) {
+            if (/not modified/i.test(e.message)) { results.push({ ...base, ok: true, action: "unchanged" }); done = true; }
+            // الرسالة انحذفت يدوياً: ننشر من جديد
+          }
+        }
+
+        if (!done) {
+          const m = await telegramCall(env, "sendMessage", {
+            chat_id: ch.chatId, text, parse_mode: "HTML",
+            disable_web_page_preview: true, reply_markup: markup
+          });
+          ids[ch.id] = m.message_id;
+          try {
+            await telegramCall(env, "pinChatMessage", { chat_id: ch.chatId, message_id: m.message_id, disable_notification: true });
+            results.push({ ...base, ok: true, action: "posted and pinned" });
+          } catch (e) {
+            results.push({ ...base, ok: true, warn: true, action: "posted, but pin failed: " + e.message.replace(/^TELEGRAM_HTTP_\d+: /, "") });
+          }
+        }
+      } catch (e) {
+        results.push({ ...base, ok: false, error: e.message.replace(/^TELEGRAM_HTTP_\d+: /, "") });
+      }
+      await sleep(500);
+    }
+
+    await kv.put("bot_network", JSON.stringify(ids));
+    const okCount = results.filter(r => r.ok).length;
+    await this.adminNote("network", `📌 <b>Network post</b>\nDone: ${okCount}/${results.length} channels`, 0);
+    return { results };
   }
 
   dsKey(d) {

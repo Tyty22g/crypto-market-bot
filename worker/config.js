@@ -27,6 +27,7 @@ export function newChannel(over = {}) {
     showHighLow: true,
     showVolume: true,
     technicals: false,
+    priceGrouping: false,
     provider: "auto",
     format: "full",
     priceTemplate: "${price}",
@@ -66,7 +67,7 @@ export function cleanSymbols(value) {
   return symbols;
 }
 
-const CHAT_RE = /^(@[A-Za-z][A-Za-z0-9_]{3,}|-?\d{5,})$/;
+export const CHAT_RE = /^(@[A-Za-z][A-Za-z0-9_]{3,}|-?\d{5,})$/;
 
 function sanitizeChannel(c, old) {
   const base = newChannel();
@@ -121,6 +122,7 @@ function sanitizeChannel(c, old) {
     showHighLow: c.showHighLow !== false,
     showVolume: c.showVolume !== false,
     technicals: Boolean(c.technicals),
+    priceGrouping: Boolean(c.priceGrouping),
     provider: PROVIDER_IDS.includes(c.provider) ? c.provider : "auto",
     format: c.format === "price_only" ? "price_only" : "full",
     priceTemplate: (() => {
@@ -147,6 +149,33 @@ function sanitizeChannel(c, old) {
       },
       levels
     }
+  };
+}
+
+export function defaultNetwork() {
+  return { text: "", buttons: [], perRow: 2, channelIds: [] };
+}
+
+export function sanitizeButtons(list) {
+  return (Array.isArray(list) ? list : []).slice(0, 12).map(b => {
+    const text = String(b?.text ?? "").trim().slice(0, 40);
+    const url = String(b?.url ?? "").trim();
+    if (!text && (!url || url === "https://t.me/")) return null;
+    if (!text) throw new Error("كل زر لازم يكون له نص");
+    if (!/^https:\/\/\S+$/.test(url)) throw new Error(`رابط الزر "${text}" لازم يبدأ بـ https://`);
+    return { text, url };
+  }).filter(Boolean);
+}
+
+export function sanitizeNetwork(input, existing, validIds) {
+  const src = input && typeof input === "object" ? input : (existing || defaultNetwork());
+  const buttons = sanitizeButtons(src.buttons);
+  const ids = (Array.isArray(src.channelIds) ? src.channelIds : []).filter(id => validIds.includes(id));
+  return {
+    text: String(src.text ?? "").slice(0, 3500),
+    buttons,
+    perRow: [1, 2, 3].includes(Number(src.perRow)) ? Number(src.perRow) : 2,
+    channelIds: [...new Set(ids)]
   };
 }
 
@@ -227,6 +256,7 @@ export function sanitizeConfig(input, existing) {
     paused: Boolean(input.paused),
     adminChatId,
     settings: sanitizeSettings(input.settings, existing?.settings),
+    network: sanitizeNetwork(input.network, existing?.network, clean.map(c => c.id)),
     channels: clean
   };
 }
