@@ -59,3 +59,9 @@ footer{text-align:center;color:#718198;font-size:11px;padding:16px 0}
 .ep input[type=checkbox]{accent-color:#e8b90b;width:17px;height:17px;flex:none}
 .diag{margin-top:12px;border-top:1px solid #26354b;padding-top:8px}
 .diag .row .u{direction:ltr;text-align:left;flex:1;min-width:150px;word-break:break-all}
+
+textarea{width:100%;background:#0b1626;color:inherit;border:1px solid #26354b;border-radius:10px;padding:10px;font:inherit;font-size:14px;resize:vertical;box-sizing:border-box}
+.nb{display:flex;gap:6px;margin-bottom:6px}.nb input{flex:1;min-width:0}
+
+.bcard{border:1px solid #26354b;border-radius:10px;padding:8px;margin-bottom:8px;display:flex;flex-direction:column;gap:6px}
+.bcard .acts{display:flex;gap:6px;justify-content:flex-end}

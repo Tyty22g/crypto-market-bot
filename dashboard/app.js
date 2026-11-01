@@ -10,7 +10,7 @@ const JOB_LABEL = {
   daily: "التقرير اليومي", weekly: "التقرير الأسبوعي", alert: "تنبيه"
 };
 const DAYS = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
-const INTERVALS = [1, 2, 3, 4, 5, 6, 10, 15, 30, 60, 120, 240, 720, 1440];
+const INTERVALS = [1, 2, 3, 5, 10, 15, 30, 60, 120, 240, 720, 1440];
 const intervalLabel = n => n < 60 ? `كل ${n} دقيقة` : n === 60 ? "كل ساعة" : n < 1440 ? `كل ${n / 60} ساعات` : "كل يوم";
 const TZ = [[0, "UTC"], [1, "UTC+1"], [2, "UTC+2 (مصر/الأردن/لبنان)"], [3, "UTC+3 (العراق/السعودية/الكويت/تركيا)"],
   [3.5, "UTC+3:30 (إيران)"], [4, "UTC+4 (الإمارات/عمان)"], [5, "UTC+5"], [8, "UTC+8"], [-5, "UTC-5 (نيويورك)"]];
@@ -140,7 +140,8 @@ function channelCard(ch, i) {
         [["auto", "تلقائي (حسب ترتيب المنصات)"], ...PROV])}
       ${F.selS("شكل المنشور", `${p}.format`, ch.format || "full",
         [["full", "كامل (أسعار + تقارير)"], ["price_only", "سعر فقط مثل $5677.77666"]])}
-      ${ch.format === "price_only" ? F.text("قالب الرسالة ({price} {symbol} {change})", `${p}.priceTemplate`, ch.priceTemplate || DEF_TPL, "", 'dir="ltr"') +
+      ${ch.format === "price_only" ? F.text("قالب الرسالة ({price} {arrow} {change} {symbol})", `${p}.priceTemplate`, ch.priceTemplate || DEF_TPL, "", 'dir="ltr"') +
+        F.chk("فواصل الآلاف (5,677.77)", `${p}.priceGrouping`, ch.priceGrouping) +
         `<p class="hint">ينشر السعر فقط لكل عملة بالقائمة. اضبط «نشر الأسعار» كل 3 دقائق مثلاً. تقارير الساعة والـ4 ساعات تُتجاهل بهذا الشكل.</p>` : ""}
       ${F.text("عنوان المنشور", `${p}.title`, ch.title)}
       ${F.text("رابط القناة (زر الانضمام تحت المنشور)", `${p}.channelUrl`, ch.channelUrl, "https://t.me/...", 'dir="ltr"')}
@@ -299,7 +300,135 @@ $("providers").addEventListener("change", e => {
 });
 $("failover").addEventListener("change", () => { cfg.settings.failover = $("failover").checked; markDirty(); });
 
-function renderAll() { renderChannels(); renderConnection(); renderProviders(); renderGeneral(); renderStatus(); clean(); }
+// محرر أزرار مشترك (للشبكة وللنشر الحر)
+function makeBtnEditor(el, getList, onChange) {
+  const render = () => {
+    const list = getList();
+    el.innerHTML = list.map((b, i) => `
+      <div class="bcard">
+        <select data-be="pick" data-i="${i}">
+          <option value="">رابط مخصص</option>
+          ${cfg.channels.map(c => `<option value="${c.id}" ${b.ch === c.id ? "selected" : ""}>قناة: ${esc(c.name)}</option>`).join("")}
+        </select>
+        <input data-be="text" data-i="${i}" value="${esc(b.text)}" placeholder="نص الزر">
+        <input data-be="url" data-i="${i}" dir="ltr" value="${esc(b.url)}" placeholder="https://t.me/...">
+        <div class="acts">
+          <button class="secondary small" data-be="up" data-i="${i}" ${i === 0 ? "disabled" : ""}>↑</button>
+          <button class="secondary small" data-be="down" data-i="${i}" ${i === list.length - 1 ? "disabled" : ""}>↓</button>
+          <button class="danger small" data-be="del" data-i="${i}">✕</button>
+        </div>
+      </div>`).join("");
+  };
+  el.addEventListener("input", e => {
+    const t = e.target.closest("input[data-be]"); if (!t) return;
+    const b = getList()[Number(t.dataset.i)]; b[t.dataset.be] = t.value; delete b.ch; onChange();
+  });
+  el.addEventListener("change", e => {
+    const t = e.target.closest("select[data-be=pick]"); if (!t) return;
+    const b = getList()[Number(t.dataset.i)], c = cfg.channels.find(x => x.id === t.value);
+    if (c) {
+      b.ch = c.id; b.text = c.name; b.url = c.channelUrl || "https://t.me/";
+      if (!c.channelUrl) notice("هذي القناة ما إلها «رابط القناة» ببطاقتها، اكتبه بالرابط.", "err");
+    } else delete b.ch;
+    onChange(); render();
+  });
+  el.addEventListener("click", e => {
+    const t = e.target.closest("button[data-be]"); if (!t) return;
+    const l = getList(), i = Number(t.dataset.i);
+    if (t.dataset.be === "del") l.splice(i, 1);
+    else if (t.dataset.be === "up" && i > 0) [l[i - 1], l[i]] = [l[i], l[i - 1]];
+    else if (t.dataset.be === "down" && i < l.length - 1) [l[i + 1], l[i]] = [l[i], l[i + 1]];
+    else return;
+    onChange(); render();
+  });
+  return {
+    render,
+    addChannel() { const c = cfg.channels[0]; getList().push({ ch: c?.id, text: c?.name || "", url: c?.channelUrl || "https://t.me/" }); onChange(); render(); },
+    addUrl() { getList().push({ text: "", url: "https://" }); onChange(); render(); },
+    fillAll() {
+      const l = getList(), have = new Set(l.map(b => b.ch));
+      for (const c of cfg.channels) if (!have.has(c.id)) l.push({ ch: c.id, text: c.name, url: c.channelUrl || "https://t.me/" });
+      onChange(); render();
+    }
+  };
+}
+const results = (r) => `<div class="diag">` + r.map(x => `
+  <div class="row"><span>${x.ok ? (x.warn ? "⚠️" : "✅") : "❌"}</span><span class="u">${esc(x.name)}</span>
+  <span class="${x.ok && !x.warn ? "okc" : "err"}">${esc(x.action || x.error)}</span></div>`).join("") + `</div>`;
+
+// ---- تبويب الشبكة (منشور مثبت قابل للتعديل) ----
+function net() { return cfg.network ||= { text: "", buttons: [], perRow: 2, channelIds: [] }; }
+const netEd = makeBtnEditor($("netButtons"), () => net().buttons, () => markDirty());
+function renderNetwork() {
+  const n = net();
+  $("netText").value = n.text;
+  $("netPerRow").value = String(n.perRow || 2);
+  netEd.render();
+  $("netChannels").innerHTML = cfg.channels.map(c => `
+    <label class="check"><input type="checkbox" data-nc="${c.id}" ${n.channelIds.includes(c.id) ? "checked" : ""}> ${esc(c.name)}</label>`).join("");
+}
+$("netText").addEventListener("input", () => { net().text = $("netText").value; markDirty(); });
+$("netPerRow").addEventListener("change", () => { net().perRow = Number($("netPerRow").value); markDirty(); });
+$("netChannels").addEventListener("change", e => {
+  const el = e.target.closest("[data-nc]"); if (!el) return;
+  const n = net(), id = el.dataset.nc;
+  n.channelIds = n.channelIds.filter(x => x !== id);
+  if (el.checked) n.channelIds.push(id);
+  markDirty();
+});
+$("netAddCh").addEventListener("click", () => netEd.addChannel());
+$("netAddUrl").addEventListener("click", () => netEd.addUrl());
+$("netFillBtn").addEventListener("click", () => netEd.fillAll());
+$("netPublish").addEventListener("click", async () => {
+  const b = $("netPublish"); b.disabled = true; b.textContent = "جاري النشر...";
+  try {
+    if (dirty && !(await saveConfig())) return;
+    const d = await api("/api/network", "POST", {});
+    $("netOut").innerHTML = results(d.results);
+  } catch (e) { notice(e.message, "err"); }
+  finally { b.disabled = false; b.textContent = "حفظ، نشر وتثبيت"; }
+});
+
+// ---- تبويب النشر الحر (لمرة وحدة) ----
+const post = { text: "", buttons: [], perRow: 2, pin: false, silent: false, all: false, channelIds: [], extra: [] };
+const extraList = () => $("pExtra").value.split(/[\n,\s]+/).map(x => x.trim()).filter(Boolean);
+const postEd = makeBtnEditor($("pButtons"), () => post.buttons, () => {});
+function renderPost() {
+  postEd.render();
+  $("pPerRow").value = String(post.perRow);
+  $("pPin").checked = post.pin; $("pSilent").checked = post.silent; $("pAll").checked = post.all;
+  $("pChannels").innerHTML = cfg.channels.map(c => `
+    <label class="check"><input type="checkbox" data-pc="${c.id}" ${post.all || post.channelIds.includes(c.id) ? "checked" : ""} ${post.all ? "disabled" : ""}> ${esc(c.name)}</label>`).join("");
+}
+$("pText").addEventListener("input", () => { post.text = $("pText").value; });
+$("pPerRow").addEventListener("change", () => { post.perRow = Number($("pPerRow").value); });
+$("pPin").addEventListener("change", () => { post.pin = $("pPin").checked; });
+$("pSilent").addEventListener("change", () => { post.silent = $("pSilent").checked; });
+$("pAll").addEventListener("change", () => { post.all = $("pAll").checked; renderPost(); });
+$("pChannels").addEventListener("change", e => {
+  const el = e.target.closest("[data-pc]"); if (!el) return;
+  post.channelIds = post.channelIds.filter(x => x !== el.dataset.pc);
+  if (el.checked) post.channelIds.push(el.dataset.pc);
+});
+$("pAddCh").addEventListener("click", () => postEd.addChannel());
+$("pAddUrl").addEventListener("click", () => postEd.addUrl());
+$("pFill").addEventListener("click", () => postEd.fillAll());
+$("pPublish").addEventListener("click", async () => {
+  post.extra = extraList();
+  const n = (post.all ? cfg.channels.length : post.channelIds.length) + post.extra.length;
+  if (!post.text.trim()) return notice("اكتب نص المنشور أولاً.", "err");
+  if (!n) return notice("اختر قناة واحدة على الأقل.", "err");
+  if (!confirm(`نشر المنشور بـ ${n} قناة${post.pin ? " مع التثبيت" : ""}؟`)) return;
+  const b = $("pPublish"); b.disabled = true; b.textContent = "جاري النشر...";
+  try {
+    if (dirty && !(await saveConfig())) return;
+    const d = await api("/api/post", "POST", { ...post, buttons: post.buttons.map(({ text, url }) => ({ text, url })) });
+    $("pOut").innerHTML = results(d.results);
+  } catch (e) { notice(e.message, "err"); }
+  finally { b.disabled = false; b.textContent = "نشر الآن"; }
+});
+
+function renderAll() { renderChannels(); renderPost(); renderNetwork(); renderConnection(); renderProviders(); renderGeneral(); renderStatus(); clean(); }
 
 // ---------- أحداث ----------
 function onField(e) {
@@ -325,7 +454,7 @@ document.querySelector(".tabs").addEventListener("click", e => {
   const b = e.target.closest("button[data-tab]");
   if (!b) return;
   document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
-  ["status", "channels", "connection", "general"].forEach(t => { $("tab-" + t).hidden = t !== b.dataset.tab; });
+  ["status", "channels", "post", "network", "connection", "general"].forEach(t => { $("tab-" + t).hidden = t !== b.dataset.tab; });
   if (b.dataset.tab === "status") refreshStatus();
 });
 
@@ -396,7 +525,7 @@ $("addPriceChannel").addEventListener("click", () => {
   const id = "ch_" + Math.random().toString(36).slice(2, 8);
   cfg.channels.push({
     id, name: "BTC price", enabled: true, chatId: "", channelUrl: "", buttonText: "",
-    title: "BTC", symbols: ["BTCUSDT"], tzOffset: 3, provider: "auto", format: "price_only", priceTemplate: DEF_TPL,
+    title: "BTC", symbols: ["BTCUSDT"], tzOffset: 3, provider: "auto", format: "price_only", priceTemplate: DEF_TPL, priceGrouping: false,
     showHighLow: false, showVolume: false, technicals: false,
     jobs: { price: { enabled: true, everyMinutes: 3 }, hourly: { enabled: false }, four_hour: { enabled: false },
       daily: { enabled: false, hour: 0 }, weekly: { enabled: false, day: 5, hour: 0 } },

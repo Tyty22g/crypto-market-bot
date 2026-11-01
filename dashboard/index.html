@@ -30,6 +30,8 @@
     <nav class="tabs">
       <button data-tab="status" class="on">الحالة</button>
       <button data-tab="channels">القنوات</button>
+      <button data-tab="post">نشر</button>
+      <button data-tab="network">الشبكة</button>
       <button data-tab="connection">الاتصال</button>
       <button data-tab="general">عام</button>
     </nav>
@@ -44,6 +46,56 @@
       <div id="channels"></div>
       <button id="addChannel" class="secondary wide">+ إضافة قناة جديدة</button>
       <button id="addPriceChannel" class="secondary wide">+ قناة سعر عملة واحدة (مثل $5677.77)</button>
+    </section>
+
+    <section id="tab-post" hidden>
+      <div class="panel">
+        <h2>نشر منشور</h2>
+        <p class="hint" style="margin:0 0 8px">منشور لمرة وحدة (ما يتعدل لاحقاً). اكتب النص، أضف أزرار إذا تريد، واختر القنوات.</p>
+        <label>نص المنشور</label>
+        <textarea id="pText" rows="8"></textarea>
+        <h2 style="margin-top:14px">الأزرار</h2>
+        <div id="pButtons"></div>
+        <div class="actions">
+          <button id="pAddCh" class="secondary small">+ زر قناة</button>
+          <button id="pAddUrl" class="secondary small">+ زر رابط</button>
+          <button id="pFill" class="secondary small">كل القنوات</button>
+        </div>
+        <label>عدد الأزرار بالصف</label>
+        <select id="pPerRow"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select>
+        <label class="check"><input type="checkbox" id="pPin"> تثبيت المنشور</label>
+        <label class="check"><input type="checkbox" id="pSilent"> بدون إشعار للمشتركين</label>
+        <h2 style="margin-top:14px">القنوات</h2>
+        <label class="check"><input type="checkbox" id="pAll"> <b>الكل</b></label>
+        <div id="pChannels"></div>
+        <label>قنوات أخرى (غير مضافة باللوحة)</label>
+        <textarea id="pExtra" rows="3" dir="ltr" placeholder="@channel_one&#10;@channel_two&#10;-1001234567890"></textarea>
+        <p class="hint">كل قناة بسطر، بشرط البوت أدمن فيها. تُستعمل لهذا النشر فقط ولا تنحفظ.</p>
+        <div class="actions"><button id="pPublish">نشر الآن</button></div>
+        <div id="pOut"></div>
+      </div>
+    </section>
+
+    <section id="tab-network" hidden>
+      <div class="panel">
+        <h2>منشور الشبكة المثبت</h2>
+        <p class="hint" style="margin:0 0 8px">يُنشر ويُثبّت بالقنوات المختارة بضغطة وحدة. إذا غيّرت النص أو الأزرار وضغطت نشر مرة ثانية، يتعدل المنشور القديم بدل ما يتكرر. لازم البوت أدمن بكل قناة مع صلاحية «Pin messages».</p>
+        <label>نص المنشور</label>
+        <textarea id="netText" rows="9" placeholder="🌐 KRYPTON NETWORK..."></textarea>
+        <h2 style="margin-top:14px">الأزرار</h2>
+        <div id="netButtons"></div>
+        <div class="actions">
+          <button id="netAddCh" class="secondary small">+ زر قناة</button>
+          <button id="netAddUrl" class="secondary small">+ زر رابط</button>
+          <button id="netFillBtn" class="secondary small">كل القنوات</button>
+        </div>
+        <label>عدد الأزرار بالصف</label>
+        <select id="netPerRow"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select>
+        <h2 style="margin-top:14px">القنوات</h2>
+        <div id="netChannels"></div>
+        <div class="actions"><button id="netPublish">حفظ، نشر وتثبيت</button></div>
+        <div id="netOut"></div>
+      </div>
     </section>
 
     <section id="tab-connection" hidden>
